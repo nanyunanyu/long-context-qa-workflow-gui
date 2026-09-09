@@ -119,6 +119,7 @@ def _pack_entry(root: Path, domain_key: str, name: str, pack_dir: Path, listed: 
     if not docs and not has_md:
         issues.append("尚未放入文档")
     status = pack_cat.get("status") or listed.get("status") or "READY"
+    audit = pack_cat.get("llm_audit") if isinstance(pack_cat.get("llm_audit"), dict) else None
     hint = "READY"
     if issues:
         hint = "；".join(dict.fromkeys(issues))
@@ -128,6 +129,12 @@ def _pack_entry(root: Path, domain_key: str, name: str, pack_dir: Path, listed: 
         hint = "已用于门禁失败样例"
     elif str(status).upper() == "IN_PROGRESS":
         hint = "生产中"
+    if audit and audit.get("status"):
+        summary = str(audit.get("summary") or "").strip()
+        extra = f"审核 {audit.get('status')}"
+        if summary:
+            extra += f"：{summary[:48]}"
+        hint = f"{hint} · {extra}" if hint else extra
     return {
         "pack": pack_cat.get("pack") or listed.get("pack") or name,
         "domain_key": domain_key,
@@ -138,6 +145,7 @@ def _pack_entry(root: Path, domain_key: str, name: str, pack_dir: Path, listed: 
         "docs": doc_rows,
         "issues": list(dict.fromkeys(issues)),
         "hint": hint,
+        "llm_audit": audit,
         "ready": not issues and str(status).upper() in {"", "READY", "OK", "SELECTED"},
         "slug": f"{domain_key}-{pack_cat.get('pack') or listed.get('pack') or name}",
     }

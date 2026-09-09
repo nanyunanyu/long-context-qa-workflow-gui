@@ -3,6 +3,9 @@
     <div class="bar">
       <h2>材料目录</h2>
       <button @click="load">刷新</button>
+      <button type="button" :disabled="auditBusy || !visiblePackCount" @click="auditVisible">
+        {{ auditBusy ? "审核中…" : "审核当前列表" }}
+      </button>
       <label class="search-field">
         搜索材料
         <input
@@ -43,7 +46,11 @@
       </div>
       <span class="hint">已显示 {{ visiblePackCount }} / {{ totalPackCount }} 包</span>
     </div>
-    <p class="note">请按领域 → 主题包放入 pdf/html 与对应 md，并维护 CATALOG.json。本页只检查，不代写原文。</p>
+    <p class="note">
+      请按领域 → 主题包放入 pdf/html 与对应 md，并维护 CATALOG.json。结构检查在本页完成；「审核」会调用大模型按选材标准写回
+      CATALOG.llm_audit，不拦入队。
+    </p>
+    <p v-if="auditMessage" class="note" :class="{ err: auditError }">{{ auditMessage }}</p>
     <pre v-if="data.readme" class="readme">{{ data.readme }}</pre>
 
     <div v-for="domain in visibleDomains" :key="domain.domain_key" class="domain">
@@ -53,7 +60,9 @@
           <tr>
             <th>包</th>
             <th>状态</th>
+            <th>审核</th>
             <th>提示</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -63,7 +72,19 @@
               <div class="muted">{{ pack.path }}</div>
             </td>
             <td>{{ pack.status }}</td>
+            <td>
+              <span v-if="pack.llm_audit?.status" class="audit-chip" :class="'tone-' + pack.llm_audit.status">
+                {{ auditLabel(pack.llm_audit.status) }}
+              </span>
+              <span v-else class="muted">未审核</span>
+              <div v-if="pack.llm_audit?.summary" class="muted audit-summary">{{ pack.llm_audit.summary }}</div>
+            </td>
             <td>{{ pack.hint }}</td>
+            <td>
+              <button type="button" class="link" :disabled="auditBusy" @click="auditOne(pack, domain.domain_key)">
+                审核
+              </button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -77,7 +98,7 @@
 <script setup lang="ts">
 import { computed, onDeactivated, onMounted, onUnmounted, ref, watch, type Directive } from "vue";
 import { NCheckbox, NCheckboxGroup } from "naive-ui";
-import { apiGet, apiPut, matchesMaterialQuery } from "../api";
+import { apiGet, apiPost, apiPut, matchesMaterialQuery } from "../api";
 
 const props = defineProps<{ initialPrefs?: any }>();
 const emit = defineEmits(["prefsSaved"]);
@@ -119,6 +140,9 @@ function domainsFromPrefs(prefs: any): string[] | null {
 const data = ref<any>({ domains: [] });
 const filterOpen = ref(false);
 const packSearch = ref("");
+const auditBusy = ref(false);
+const auditMessage = ref("");
+const auditError = ref(false);
 function closeFilter() {
   filterOpen.value = false;
 }
@@ -231,6 +255,64 @@ onUnmounted(() => persistFilters(true));
 
 async function load() {
   data.value = await apiGet("/api/materials");
+}
+
+function auditLabel(status: string) {
+  if (status === "pass") return "通过";
+  if (status === "warn") return "警告";
+  if (status === "fail") return "不通过";
+  return status;
+}
+
+async function waitAuditDone() {
+  await new Promise((resolve) => window.setTimeout(resolve, 400));
+  for (let i = 0; i < 180; i++) {
+    const state = await apiGet("/api/run/state");
+    if (!state?.audit_busy) {
+      await load();
+      return state?.last_audit;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 800));
+  }
+  await load();
+  return null;
+}
+
+async function startAudit(packs: Array<{ domain_key: string; pack: string }>) {
+  if (!packs.length) return;
+  auditBusy.value = true;
+  auditError.value = false;
+  auditMessage.value = `正在审核 ${packs.length} 个材料包…`;
+  try {
+    await apiPost("/api/materials/audit", { packs });
+    const result = await waitAuditDone();
+    const ok = Number(result?.count || 0);
+    const fail = (result?.results || []).filter((r: any) => !r.ok).length;
+    auditMessage.value = fail ? `审核结束：成功 ${ok}，失败 ${fail}` : `审核结束：成功 ${ok}`;
+    auditError.value = Boolean(fail);
+  } catch (err: any) {
+    auditError.value = true;
+    auditMessage.value = err?.message || String(err);
+  } finally {
+    auditBusy.value = false;
+  }
+}
+
+function auditOne(pack: any, domainKey: string) {
+  return startAudit([{ domain_key: String(pack.domain_key || domainKey), pack: String(pack.pack || "") }]);
+}
+
+function auditVisible() {
+  const packs: Array<{ domain_key: string; pack: string }> = [];
+  for (const domain of visibleDomains.value) {
+    for (const pack of domain.packs || []) {
+      packs.push({
+        domain_key: String(pack.domain_key || domain.domain_key || ""),
+        pack: String(pack.pack || ""),
+      });
+    }
+  }
+  return startAudit(packs);
 }
 
 onMounted(async () => {
@@ -373,5 +455,44 @@ button {
 }
 .check-row {
   margin-bottom: 8px;
+}
+.note.err {
+  color: #c53030;
+}
+.audit-chip {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.audit-chip.tone-pass {
+  color: #166534;
+  background: #dcfce7;
+}
+.audit-chip.tone-warn {
+  color: #9a3412;
+  background: #ffedd5;
+}
+.audit-chip.tone-fail {
+  color: #9f1239;
+  background: #ffe4e6;
+}
+.audit-summary {
+  margin-top: 4px;
+  font-size: 12px;
+  max-width: 280px;
+}
+button.link {
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  padding: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+button.link:disabled,
+button:disabled {
+  opacity: 0.45;
 }
 </style>
