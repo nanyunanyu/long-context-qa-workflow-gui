@@ -27,6 +27,27 @@ def read_queue(workspace: Path) -> dict[str, Any]:
         return {"version": 2, "tasks": []}
 
 
+def write_queue(workspace: Path, queue: dict[str, Any]) -> None:
+    path = workspace / "queue" / "queue.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def patch_task(workspace: Path, task_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+    """Merge fields onto a queue task and persist. Used after review-pass/reject rewrite the queue."""
+    queue = read_queue(workspace)
+    found: dict[str, Any] | None = None
+    for task in queue.get("tasks") or []:
+        if isinstance(task, dict) and task.get("id") == task_id:
+            task.update(fields)
+            found = task
+            break
+    if found is None:
+        raise KeyError(f"task not found: {task_id}")
+    write_queue(workspace, queue)
+    return found
+
+
 def _qw(workspace: Path, args: list[str]) -> dict[str, Any]:
     proc = subprocess.run(
         ["python3", str(workspace / "workflow" / "queue_worker.py"), *args],

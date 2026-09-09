@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -559,6 +560,71 @@ class DesktopSettingsTests(unittest.TestCase):
                 self.assertEqual(public["roles"]["generation"]["reasoning_effort"], "medium")
                 self.assertEqual(public["roles"]["evaluation"]["reasoning_effort"], "high")
                 self.assertEqual(public["roles"]["judge"]["reasoning_effort"], "medium")
+                self.assertEqual(public["roles"]["review"]["reasoning_effort"], "medium")
+                self.assertEqual(public["roles"]["material_audit"]["reasoning_effort"], "medium")
+
+    def test_review_and_audit_fall_back_to_judge_and_pipeline_ready_ignores_aux(self) -> None:
+        import tempfile
+        from unittest.mock import patch
+
+        from desktop.backend import settings as settings_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory)
+            settings_path = config / "settings.json"
+            keys_path = config / "keys.env"
+            with patch.object(settings_mod, "CONFIG_DIR", config), patch.object(
+                settings_mod, "SETTINGS_PATH", settings_path
+            ), patch.object(settings_mod, "KEYS_PATH", keys_path), patch.object(
+                settings_mod, "LEGACY_KEY_FILE", config / "missing-ai-keys.env"
+            ), patch.object(settings_mod, "LEGACY_VANKIT", config / "missing-vankit.txt"):
+                public = settings_mod.save_settings(
+                    {
+                        "roles": {
+                            "generation": {
+                                "model": "gpt-custom-gen",
+                                "base_url": "https://relay.example/v1",
+                                "api_key": "gen-secret-key-123456",
+                            },
+                            "evaluation": {
+                                "model": "qwen-custom",
+                                "base_url": "https://dash.example/v1",
+                                "api_key": "eval-secret-key-123456",
+                            },
+                            "judge": {
+                                "model": "luna-custom",
+                                "base_url": "https://openai.example/v1",
+                                "api_key": "judge-secret-key-123456",
+                            },
+                        }
+                    }
+                )
+                self.assertTrue(public["ready"])
+                self.assertTrue(public["review_ready"])
+                self.assertTrue(public["material_audit_ready"])
+                self.assertEqual(public["roles"]["review"]["api_key_source"], "judge")
+                self.assertEqual(public["roles"]["material_audit"]["api_key_source"], "judge")
+                self.assertEqual(public["roles"]["review"]["model"], "gpt-5.6-luna")
+                env = settings_mod.apply_to_environ({})
+                self.assertEqual(env["LCQA_REVIEW_API_KEY"], "judge-secret-key-123456")
+                self.assertEqual(env["LCQA_AUDIT_API_KEY"], "judge-secret-key-123456")
+                self.assertEqual(env["LCQA_REVIEW_BASE_URL"], "https://openai.example/v1")
+                own = settings_mod.save_settings(
+                    {
+                        "roles": {
+                            "review": {
+                                "model": "review-custom",
+                                "base_url": "https://review.example/v1",
+                                "api_key": "review-secret-key-123456",
+                            }
+                        }
+                    }
+                )
+                self.assertEqual(own["roles"]["review"]["api_key_source"], "own")
+                self.assertEqual(own["roles"]["review"]["model"], "review-custom")
+                env2 = settings_mod.apply_to_environ({})
+                self.assertEqual(env2["LCQA_REVIEW_API_KEY"], "review-secret-key-123456")
+                self.assertEqual(env2["LCQA_AUDIT_API_KEY"], "judge-secret-key-123456")
 
 
 class LcqaReasoningTests(unittest.TestCase):
@@ -1279,6 +1345,254 @@ class StageProgressTests(unittest.TestCase):
             (raw / "judge_1.json").write_text('{"correct": true}', encoding="utf-8")
             (raw / "judge_2.json").write_text('{"correct": false}', encoding="utf-8")
             self.assertEqual(_judge_progress_detail(raw), "2/8 · 已对 1")
+
+
+def _write_pending_review_task(root: Path, *, task_id: str = "t-zero") -> Path:
+    held = root / "archive" / "pending-review" / "042-demo-c01"
+    gold = held / "questions" / "q01" / "data" / "gold.json"
+    gold.parent.mkdir(parents=True)
+    gold.write_text(
+        json.dumps(
+            {
+                "question": "What portal is used?",
+                "answer": "the overflowing basin; the mirror",
+                "evidence": [{"id": "E1", "text": "the overflowing basin"}],
+                "evidence_reasoning": "E1 names the basin.",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (held / "main_file").mkdir(parents=True, exist_ok=True)
+    (held / "main_file" / "context_000001.txt").write_text(
+        "the overflowing basin appears in the bedroom. later the mirror is the crossing.",
+        encoding="utf-8",
+    )
+    (held / "sample_qc.md").write_text("# qc\n", encoding="utf-8")
+    (held / "PENDING_REVIEW.md").write_text("# pending\n", encoding="utf-8")
+    cand = root / "work" / "samples" / "042-demo" / "work" / "candidates" / "candidate-01"
+    (cand / "work" / "raw").mkdir(parents=True)
+    (cand / "work" / "raw" / "judge_summary.json").write_text(
+        json.dumps({"avg_accuracy": 0.0, "n": 8, "correct": 0}),
+        encoding="utf-8",
+    )
+    pack = root / "materials" / "example" / "demo-pack"
+    pack.mkdir(parents=True)
+    (pack / "CATALOG.json").write_text(
+        json.dumps({"pack": "demo-pack", "status": "GATE_FAILED_042", "docs": []}, ensure_ascii=False, indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    (pack.parent / "CATALOG.json").write_text(
+        json.dumps(
+            {"domain": "example", "domain_key": "example", "packs": [{"pack": "demo-pack", "status": "GATE_FAILED_042"}]},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    queue_path = root / "queue" / "queue.json"
+    queue_path.parent.mkdir(parents=True)
+    queue_path.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "tasks": [
+                    {
+                        "id": task_id,
+                        "slug": "demo",
+                        "status": "blocked",
+                        "review_status": "manual_review",
+                        "avg_accuracy": 0.0,
+                        "sample_dir": "work/samples/042-demo",
+                        "materials_pack": "materials/example/demo-pack",
+                        "history": [],
+                        "candidate_results": [
+                            {
+                                "status": "manual_review",
+                                "avg_accuracy": 0.0,
+                                "sample_dir": "archive/pending-review/042-demo-c01",
+                                "candidate_dir": "work/samples/042-demo/work/candidates/candidate-01",
+                                "candidate_id": "candidate-01",
+                                "candidate_index": 1,
+                                "attempt": 1,
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return held
+
+
+class AutoReviewTests(unittest.TestCase):
+    def test_install_ca_bundle_sets_ssl_cert_file(self) -> None:
+        from desktop.backend.llm_client import install_ca_bundle
+
+        old = os.environ.pop("SSL_CERT_FILE", None)
+        try:
+            path = install_ca_bundle(force=True)
+            self.assertTrue(path)
+            self.assertTrue(Path(path).is_file())
+            self.assertEqual(os.environ.get("SSL_CERT_FILE"), path)
+        finally:
+            if old is None:
+                os.environ.pop("SSL_CERT_FILE", None)
+            else:
+                os.environ["SSL_CERT_FILE"] = old
+
+    def test_extract_json_object_from_fence(self) -> None:
+        from desktop.backend.llm_client import extract_json_object
+
+        data = extract_json_object('sure\n```json\n{"verdict": "pass"}\n```\n')
+        self.assertEqual(data["verdict"], "pass")
+
+    def test_auto_review_fail_moves_to_failed_samples(self) -> None:
+        from desktop.backend import auto_review as auto_review_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            held = _write_pending_review_task(root)
+            with patch.object(auto_review_mod, "load_keys"), patch.object(
+                auto_review_mod,
+                "chat_json",
+                return_value={
+                    "verdict": "fail",
+                    "gold_supported": False,
+                    "question_ok": False,
+                    "reason": "金标与原文不符",
+                },
+            ):
+                result = auto_review_mod.run_auto_review(root, "t-zero")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["auto_review"]["action"], "rejected")
+            self.assertFalse(held.exists())
+            dest = root / "archive" / "failed-samples" / "042-demo-c01"
+            self.assertTrue((dest / "HUMAN_REJECT.md").is_file())
+            self.assertTrue((dest / "questions" / "q01" / "data" / "auto_review.json").is_file())
+            task = json.loads((root / "queue" / "queue.json").read_text(encoding="utf-8"))["tasks"][0]
+            self.assertEqual(task["status"], "gate_failed")
+            self.assertEqual(task["auto_review"]["verdict"], "fail")
+            self.assertIn("auto-review", task["failure_reason"])
+
+    def test_auto_review_invalid_json_aborts_without_moving(self) -> None:
+        from desktop.backend import auto_review as auto_review_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            held = _write_pending_review_task(root)
+            with patch.object(auto_review_mod, "load_keys"), patch.object(
+                auto_review_mod, "chat_json", return_value={"verdict": "maybe"}
+            ):
+                result = auto_review_mod.run_auto_review(root, "t-zero")
+            self.assertFalse(result["ok"])
+            self.assertTrue(result.get("aborted"))
+            self.assertTrue(held.exists())
+            task = json.loads((root / "queue" / "queue.json").read_text(encoding="utf-8"))["tasks"][0]
+            self.assertEqual(task["status"], "blocked")
+            self.assertEqual(task["auto_review"]["action"], "aborted")
+
+    def test_auto_review_pass_calls_review_pass(self) -> None:
+        from desktop.backend import auto_review as auto_review_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_pending_review_task(root)
+            with patch.object(auto_review_mod, "load_keys"), patch.object(
+                auto_review_mod,
+                "chat_json",
+                return_value={
+                    "verdict": "pass",
+                    "gold_supported": True,
+                    "question_ok": True,
+                    "reason": "金标可由证据推出",
+                },
+            ), patch.object(auto_review_mod, "run_review_pass", return_value={"ok": True, "task_id": "t-zero"}) as mocked:
+                result = auto_review_mod.run_auto_review(root, "t-zero")
+            mocked.assert_called_once()
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["auto_review"]["action"], "promoted")
+            task = json.loads((root / "queue" / "queue.json").read_text(encoding="utf-8"))["tasks"][0]
+            self.assertEqual(task["auto_review"]["verdict"], "pass")
+            self.assertEqual(task["status"], "blocked")
+
+
+class MaterialAuditTests(unittest.TestCase):
+    def test_audit_writes_llm_audit_without_changing_status(self) -> None:
+        from desktop.backend import material_audit as audit_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pack = root / "materials" / "example" / "demo-pack"
+            pack.mkdir(parents=True)
+            md = pack / "md" / "doc.md"
+            md.parent.mkdir(parents=True)
+            md.write_text("# Niche protocol\n\nCross-document exception clause lives here.\n", encoding="utf-8")
+            catalog_path = pack / "CATALOG.json"
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "pack": "demo-pack",
+                        "domain": "example",
+                        "domain_key": "example",
+                        "status": "READY",
+                        "coldness": "cold",
+                        "theme": "niche protocol exceptions",
+                        "docs": [
+                            {
+                                "doc_id": "DOC1",
+                                "title": "Niche protocol",
+                                "file_md": "materials/example/demo-pack/md/doc.md",
+                                "approx_tokens": 20000,
+                                "license_note": "public domain",
+                            }
+                        ],
+                        "total_approx_tokens": 20000,
+                        "enough_for_16k": True,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (pack.parent / "CATALOG.json").write_text(
+                json.dumps(
+                    {"domain": "example", "domain_key": "example", "packs": [{"pack": "demo-pack", "path": str(pack)}]},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(
+                audit_mod,
+                "chat_json",
+                return_value={
+                    "status": "pass",
+                    "summary": "冷源且足够长",
+                    "checks": {
+                        "license_ok": True,
+                        "enough_length": True,
+                        "long_context_potential": True,
+                        "cold_enough": True,
+                    },
+                    "notes": "ok",
+                },
+            ):
+                result = audit_mod.audit_pack(root, "example", "demo-pack")
+            self.assertTrue(result["ok"])
+            saved = json.loads(catalog_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["status"], "READY")
+            self.assertEqual(saved["llm_audit"]["status"], "pass")
+            self.assertEqual(saved["llm_audit"]["summary"], "冷源且足够长")
+            self.assertEqual(saved["theme"], "niche protocol exceptions")
 
 
 if __name__ == "__main__":

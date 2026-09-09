@@ -216,6 +216,7 @@ export const STAGE_NAMES: Record<string, string> = {
   "gate-failed": "门禁失败归档",
   complete: "结束",
   paused: "已暂停",
+  "auto-review": "自动复验",
 };
 
 /** Main per-task pipeline shown in the board stage strip. */

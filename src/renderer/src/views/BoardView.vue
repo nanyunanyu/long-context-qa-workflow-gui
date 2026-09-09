@@ -260,6 +260,16 @@
             </button>
             <button
               type="button"
+              class="batch-btn batch-auto-review"
+              :disabled="running || batchBusy || !reviewReady || !selectedReviewPassIds.length"
+              :title="reviewReady ? '对已选 复验 0/8 任务调用大模型自动判定并执行通过/打回' : '请先在设置中配置复验模型或判分密钥'"
+              @click="batchAutoReview"
+            >
+              批量自动复验
+              <span v-if="selectedReviewPassIds.length" class="batch-count">{{ selectedReviewPassIds.length }}</span>
+            </button>
+            <button
+              type="button"
               class="batch-btn batch-review-reject"
               :disabled="running || batchBusy || !selectedHumanRejectIds.length"
               title="对已选通过/待复验任务批量打回"
@@ -322,11 +332,23 @@
             <td class="col-queue">{{ queueStatusLabel(task.status, task) }}</td>
             <td class="col-stage"><StageProgress :task="task" :snapshot="snapshot" /></td>
             <td class="col-pass">
-              <StatusIcon
-                :state="passVisualState(task)"
-                :label="passColumnLabel(task)"
-                :title="passColumnTitle(task)"
-              />
+              <div class="pass-stack">
+                <StatusIcon
+                  :state="passVisualState(task)"
+                  :label="passColumnLabel(task)"
+                  :title="passColumnTitle(task)"
+                />
+                <button
+                  v-if="autoReviewChip(task)"
+                  type="button"
+                  class="review-chip"
+                  :class="'tone-' + autoReviewChip(task).tone"
+                  :title="autoReviewChip(task).title"
+                  @click="openAutoReviewFromTask(task)"
+                >
+                  {{ autoReviewChip(task).label }}
+                </button>
+              </div>
             </td>
             <td class="col-ended ended">{{ formatEndedAt(task) }}</td>
             <td class="col-actions">
@@ -343,6 +365,16 @@
                   @click="humanReject(task)"
                 >
                   复检不通过？
+                </button>
+                <button
+                  v-if="task.can_review_pass"
+                  type="button"
+                  class="link"
+                  :disabled="running || statusBusy === task.id || batchBusy || !reviewReady"
+                  :title="reviewReady ? '调用复验模型自动判定：通过则入库，不通过则打回' : '请先在设置中配置复验模型或判分密钥'"
+                  @click="autoReview(task)"
+                >
+                  自动复验
                 </button>
                 <button
                   v-if="task.can_review_pass"
@@ -422,6 +454,59 @@
           >
             {{ rejectDialog.batch ? "确认批量打回" : "确认打回" }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="autoReviewDialog.open" class="modal-backdrop" @click.self="closeAutoReviewDialog">
+      <div class="modal-card modal-wide" role="dialog" aria-label="自动复验结果">
+        <h3>自动复验结果</h3>
+        <p class="muted">
+          任务 <strong>{{ autoReviewDialog.slug }}</strong>
+        </p>
+        <p class="review-verdict" :class="'tone-' + autoReviewDialog.tone">{{ autoReviewDialog.headline }}</p>
+        <p class="modal-reason">{{ autoReviewDialog.reason || "—" }}</p>
+        <ul class="modal-checks">
+          <li>金标可被原文支持：{{ boolLabel(autoReviewDialog.goldSupported) }}</li>
+          <li>题干可判定：{{ boolLabel(autoReviewDialog.questionOk) }}</li>
+          <li>模型：{{ autoReviewDialog.model || "—" }}</li>
+          <li>时间：{{ autoReviewDialog.reviewedAt || "—" }}</li>
+        </ul>
+        <div class="modal-actions">
+          <button type="button" class="primary" @click="closeAutoReviewDialog">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="autoReviewBatchDialog.open" class="modal-backdrop" @click.self="closeAutoReviewBatchDialog">
+      <div class="modal-card modal-wide" role="dialog" aria-label="批量自动复验汇总">
+        <h3>批量自动复验汇总</h3>
+        <p class="muted">共 {{ autoReviewBatchDialog.rows.length }} 条</p>
+        <table class="summary-table">
+          <thead>
+            <tr>
+              <th>材料</th>
+              <th>结论</th>
+              <th>理由</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in autoReviewBatchDialog.rows"
+              :key="row.taskId"
+              class="clickable"
+              @click="openAutoReviewRecord(row.record, row.slug)"
+            >
+              <td>{{ row.slug }}</td>
+              <td>
+                <span class="review-chip" :class="'tone-' + row.tone">{{ row.label }}</span>
+              </td>
+              <td class="muted">{{ row.reason }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="modal-actions">
+          <button type="button" class="primary" @click="closeAutoReviewBatchDialog">关闭</button>
         </div>
       </div>
     </div>
@@ -544,6 +629,29 @@ const statusBusy = ref<string | null>(null);
 const batchBusy = ref(false);
 const selectedTaskIds = ref<string[]>([]);
 const prefsReady = ref(false);
+const prevRunning = ref(false);
+const autoReviewDialog = ref({
+  open: false,
+  slug: "",
+  headline: "",
+  tone: "abort",
+  reason: "",
+  goldSupported: null as boolean | null,
+  questionOk: null as boolean | null,
+  model: "",
+  reviewedAt: "",
+});
+const autoReviewBatchDialog = ref({
+  open: false,
+  rows: [] as Array<{
+    taskId: string;
+    slug: string;
+    label: string;
+    tone: string;
+    reason: string;
+    record: any;
+  }>,
+});
 const rejectDialog = ref({
   open: false,
   taskId: "",
@@ -635,6 +743,7 @@ const allFilteredSelected = computed(
 );
 const runStatus = computed(() => props.snapshot?.run?.status || "idle");
 const running = computed(() => ["running", "stopping"].includes(runStatus.value));
+const reviewReady = computed(() => Boolean(props.snapshot?.keys?.review_ready ?? props.snapshot?.keys?.review));
 
 const RUN_STATUS_UI: Record<string, { label: string; tone: string }> = {
   idle: { label: "空闲", tone: "idle" },
@@ -962,6 +1071,155 @@ async function batchReviewPass() {
     batchBusy.value = false;
   }
 }
+
+function boolLabel(value: boolean | null | undefined) {
+  if (value == null) return "—";
+  return value ? "是" : "否";
+}
+
+function autoReviewPresentation(record: any) {
+  const action = String(record?.action || "");
+  const verdict = String(record?.verdict || "");
+  if (action === "running") {
+    return { label: "自动复验中…", tone: "running", headline: "自动复验进行中" };
+  }
+  if (action === "aborted") {
+    return { label: "自动复验中止", tone: "abort", headline: "自动复验中止，队列未改动" };
+  }
+  if (action === "error") {
+    return { label: "自动复验执行失败", tone: "abort", headline: "判定已出，但后续入库/打回失败" };
+  }
+  if (verdict === "pass" || action === "promoted") {
+    return { label: "自动复验通过", tone: "pass", headline: "通过并入库（题/金标无误，0/8 视为模型答错）" };
+  }
+  if (verdict === "fail" || action === "rejected") {
+    return { label: "自动复验不通过", tone: "fail", headline: "不通过，已打回 failed-samples" };
+  }
+  return { label: "自动复验", tone: "abort", headline: "自动复验" };
+}
+
+function autoReviewChip(task: any) {
+  const ar = task?.auto_review;
+  const runMsg = String(props.snapshot?.run?.message || "");
+  if (!ar) {
+    if (running.value && runMsg.includes("auto-review") && task?.can_review_pass) {
+      return { label: "自动复验中…", tone: "running", title: "正在调用复验模型" };
+    }
+    return null;
+  }
+  const pres = autoReviewPresentation(ar);
+  return { ...pres, title: String(ar.reason || pres.headline) };
+}
+
+function fillAutoReviewDialog(record: any, slug: string) {
+  const pres = autoReviewPresentation(record || {});
+  autoReviewDialog.value = {
+    open: true,
+    slug,
+    headline: pres.headline,
+    tone: pres.tone,
+    reason: String(record?.reason || record?.exec_error || ""),
+    goldSupported: record?.gold_supported ?? null,
+    questionOk: record?.question_ok ?? null,
+    model: String(record?.model || ""),
+    reviewedAt: String(record?.reviewed_at || ""),
+  };
+}
+
+function openAutoReviewFromTask(task: any) {
+  fillAutoReviewDialog(task?.auto_review, String(task?.slug || task?.id || ""));
+}
+
+function openAutoReviewRecord(record: any, slug: string) {
+  fillAutoReviewDialog(record, slug);
+}
+
+function closeAutoReviewDialog() {
+  autoReviewDialog.value.open = false;
+}
+
+function closeAutoReviewBatchDialog() {
+  autoReviewBatchDialog.value.open = false;
+}
+
+function showAutoReviewLastRun(lr: any) {
+  if (!lr || lr.kind !== "auto_review") return;
+  if (lr.batch) {
+    const rows = (lr.results || []).map((item: any) => {
+      const record = item?.auto_review || { reason: item?.error || "", action: item?.ok ? "" : "aborted" };
+      const pres = autoReviewPresentation(record);
+      return {
+        taskId: String(item?.task_id || ""),
+        slug: String(item?.slug || item?.task_id || ""),
+        label: pres.label,
+        tone: pres.tone,
+        reason: String(record.reason || item?.error || ""),
+        record,
+      };
+    });
+    autoReviewBatchDialog.value = { open: true, rows };
+    return;
+  }
+  fillAutoReviewDialog(lr.auto_review || { reason: lr.error || "", action: "aborted" }, String(lr.slug || lr.task_id || ""));
+}
+
+async function autoReview(task: any) {
+  if (!reviewReady.value) {
+    alert("请先在设置中配置复验模型，或确保判分密钥可用以便回落。");
+    return;
+  }
+  const ok = window.confirm(
+    `对「${task.slug}」调用大模型自动复验？\n通过则补跑消融入库，不通过则打回 failed-samples。`
+  );
+  if (!ok) return;
+  statusBusy.value = task.id;
+  try {
+    await apiPost("/api/queue/task/auto-review", { task_id: task.id });
+    emit("refresh");
+  } catch (err: any) {
+    alert(err?.message || String(err));
+  } finally {
+    statusBusy.value = null;
+  }
+}
+
+async function batchAutoReview() {
+  const ids = [...selectedReviewPassIds.value];
+  if (!ids.length) return;
+  if (!reviewReady.value) {
+    alert("请先在设置中配置复验模型，或确保判分密钥可用以便回落。");
+    return;
+  }
+  const ok = window.confirm(
+    `对已选 ${ids.length} 条「复验 0/8」任务执行自动复验？\n将逐条调用模型并自动入库或打回（可能较久）。`
+  );
+  if (!ok) return;
+  batchBusy.value = true;
+  try {
+    const result = await apiPost("/api/queue/tasks/auto-review", { task_ids: ids });
+    const skipped = result?.skipped?.length || 0;
+    if (skipped) {
+      alert(`已启动 ${result.count || 0} 条自动复验；跳过 ${skipped} 条`);
+    }
+    const done = new Set(result?.task_ids || ids);
+    selectedTaskIds.value = selectedTaskIds.value.filter((id) => !done.has(id));
+    emit("refresh");
+  } catch (err: any) {
+    alert(err?.message || String(err));
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+watch(
+  [running, () => props.snapshot?.last_run],
+  () => {
+    if (prevRunning.value && !running.value) {
+      showAutoReviewLastRun(props.snapshot?.last_run);
+    }
+    prevRunning.value = running.value;
+  }
+);
 
 function isSelected(key: string) {
   return selectedSet.value.has(key);
@@ -1391,6 +1649,14 @@ table {
 .board-table .col-pass {
   width: 168px;
 }
+.pass-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
 .board-table .col-ended {
   width: 128px;
   white-space: nowrap;
@@ -1579,6 +1845,98 @@ td {
 }
 .batch-review-reject:not(:disabled):hover {
   background: #fecdd3;
+}
+.batch-auto-review {
+  color: #1e40af;
+  background: #e0e7ff;
+  border-color: #c7d2fe;
+}
+.batch-auto-review:not(:disabled):hover {
+  background: #c7d2fe;
+}
+.pass-stack .review-chip {
+  margin-left: 22px;
+}
+.review-chip {
+  display: inline-block;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #edf2f7;
+  color: var(--muted);
+}
+.review-chip.tone-pass {
+  color: #166534;
+  background: #dcfce7;
+  border-color: #bbf7d0;
+}
+.review-chip.tone-fail {
+  color: #9f1239;
+  background: #ffe4e6;
+  border-color: #fecdd3;
+}
+.review-chip.tone-abort {
+  color: #9a3412;
+  background: #ffedd5;
+  border-color: #fed7aa;
+}
+.review-chip.tone-running {
+  color: #1d4ed8;
+  background: #dbeafe;
+  border-color: #bfdbfe;
+}
+.review-verdict {
+  font-weight: 600;
+  margin: 8px 0;
+}
+.review-verdict.tone-pass {
+  color: #166534;
+}
+.review-verdict.tone-fail {
+  color: #9f1239;
+}
+.review-verdict.tone-abort,
+.review-verdict.tone-running {
+  color: #9a3412;
+}
+.modal-reason {
+  white-space: pre-wrap;
+  font-size: 13px;
+  color: var(--text);
+  margin: 8px 0;
+}
+.modal-checks {
+  margin: 0 0 12px;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.modal-wide {
+  width: min(640px, 100%);
+  max-height: min(80vh, 720px);
+  overflow: auto;
+}
+.summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 10px 0;
+}
+.summary-table th,
+.summary-table td {
+  text-align: left;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.summary-table tr.clickable {
+  cursor: pointer;
+}
+.summary-table tr.clickable:hover {
+  background: #ebf8ff;
 }
 button.link {
   border: 0;

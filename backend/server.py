@@ -21,6 +21,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from desktop.backend.auto_review import run_auto_review
+from desktop.backend.material_audit import audit_packs
 from desktop.backend.materials import scan_materials
 from desktop.backend.paths import code_root
 from desktop.backend.queue_ops import (
@@ -61,7 +63,9 @@ app.add_middleware(
 _lock = threading.Lock()
 _workspace: Path | None = None
 _run_thread: threading.Thread | None = None
+_audit_thread: threading.Thread | None = None
 _last_run: dict[str, Any] | None = None
+_last_audit: dict[str, Any] | None = None
 
 
 class OpenBody(BaseModel):
@@ -133,6 +137,24 @@ class HumanRejectBatchBody(BaseModel):
     requeue: bool = False
 
 
+class AutoReviewBody(BaseModel):
+    task_id: str = Field(min_length=1)
+    provider: str = "live"
+    fixture_root: str | None = None
+    source_type: str = "public technical/government documentation"
+
+
+class AutoReviewBatchBody(BaseModel):
+    task_ids: list[str] = Field(min_length=1)
+    provider: str = "live"
+    fixture_root: str | None = None
+    source_type: str = "public technical/government documentation"
+
+
+class MaterialsAuditBody(BaseModel):
+    packs: list[PackSelector] = Field(min_length=1)
+
+
 def _require_workspace() -> Path:
     if _workspace is None:
         raise HTTPException(400, "尚未选择工作根目录")
@@ -157,6 +179,7 @@ def _annotate_queue(queue: dict[str, Any]) -> dict[str, Any]:
         row["can_requeue"] = requeue
         row["can_cancel"] = cancel
         row["can_review_pass"] = review_pass
+        row["can_auto_review"] = review_pass
         row["can_human_reject"] = human_reject
         row["status_editable"] = requeue or cancel  # backward compatible
         row["ended_at"] = task_ended_at(task)
@@ -175,7 +198,17 @@ def _annotate_queue(queue: dict[str, Any]) -> dict[str, Any]:
 def _snapshot() -> dict[str, Any]:
     root = _workspace
     if root is None:
-        return {"workspace": None, "run": None, "queue": {"tasks": []}, "progress": {}, "events": [], "keys": key_status()}
+        return {
+            "workspace": None,
+            "run": None,
+            "queue": {"tasks": []},
+            "progress": {},
+            "events": [],
+            "keys": key_status(),
+            "last_run": _last_run,
+            "last_audit": _last_audit,
+            "audit_busy": False,
+        }
     queue = _annotate_queue(read_queue(root))
     progress = read_progress(root)
     return {
@@ -186,6 +219,8 @@ def _snapshot() -> dict[str, Any]:
         "events": recent_events(root, 80),
         "keys": key_status(),
         "last_run": _last_run,
+        "last_audit": _last_audit,
+        "audit_busy": _audit_busy(),
     }
 
 
@@ -200,7 +235,7 @@ def _maybe_sweep_idle(root: Path) -> dict[str, Any] | None:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "code_root": str(code_root()), "features": ["reasoning_effort"]}
+    return {"ok": True, "code_root": str(code_root()), "features": ["reasoning_effort", "auto_review", "material_audit"]}
 
 
 @app.get("/api/recents")
@@ -272,6 +307,27 @@ def api_workspace() -> dict[str, Any]:
 @app.get("/api/materials")
 def api_materials() -> dict[str, Any]:
     return scan_materials(_require_workspace())
+
+
+@app.post("/api/materials/audit")
+def api_materials_audit(body: MaterialsAuditBody) -> dict[str, Any]:
+    global _audit_thread, _last_audit
+    root = _require_workspace()
+    if _audit_busy():
+        raise HTTPException(409, "已有材料审核在运行")
+    packs = [{"domain_key": p.domain_key, "pack": p.pack} for p in body.packs]
+
+    def target() -> None:
+        global _last_audit
+        try:
+            _last_audit = {"kind": "material_audit", **audit_packs(root, packs)}
+        except Exception as exc:
+            _last_audit = {"ok": False, "kind": "material_audit", "error": str(exc)}
+
+    with _lock:
+        _audit_thread = threading.Thread(target=target, name="lcqa-material-audit", daemon=True)
+        _audit_thread.start()
+    return {"ok": True, "started": True, "count": len(packs), "snapshot": _snapshot()}
 
 
 @app.get("/api/queue")
@@ -410,6 +466,107 @@ def api_review_pass_batch(body: ReviewPassBatchBody) -> dict[str, Any]:
     }
 
 
+@app.post("/api/queue/task/auto-review")
+def api_auto_review(body: AutoReviewBody) -> dict[str, Any]:
+    global _run_thread, _last_run
+    root = _require_workspace()
+    if _busy():
+        raise HTTPException(409, "已有生产任务在运行")
+    queue = read_queue(root)
+    task = next((t for t in (queue.get("tasks") or []) if isinstance(t, dict) and t.get("id") == body.task_id), None)
+    if not task:
+        raise HTTPException(404, f"task not found: {body.task_id}")
+    if not can_review_pass(task):
+        raise HTTPException(400, "仅 blocked + 复验(0/8) 任务可执行自动复验")
+
+    def target() -> None:
+        global _last_run
+        try:
+            result = run_auto_review(
+                root,
+                body.task_id,
+                provider=body.provider,
+                fixture_root=Path(body.fixture_root) if body.fixture_root else None,
+                source_type=body.source_type,
+            )
+            _last_run = {"kind": "auto_review", "batch": False, **result}
+        except Exception as exc:
+            _last_run = {"ok": False, "kind": "auto_review", "batch": False, "error": str(exc), "task_id": body.task_id}
+
+    with _lock:
+        _run_thread = threading.Thread(target=target, name="lcqa-auto-review", daemon=True)
+        _run_thread.start()
+    return {"ok": True, "started": True, "task_id": body.task_id, "snapshot": _snapshot()}
+
+
+@app.post("/api/queue/tasks/auto-review")
+def api_auto_review_batch(body: AutoReviewBatchBody) -> dict[str, Any]:
+    global _run_thread, _last_run
+    root = _require_workspace()
+    if _busy():
+        raise HTTPException(409, "已有生产任务在运行")
+    queue = read_queue(root)
+    by_id = {
+        str(t.get("id") or ""): t
+        for t in (queue.get("tasks") or [])
+        if isinstance(t, dict) and t.get("id")
+    }
+    eligible: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for raw in body.task_ids:
+        tid = str(raw or "").strip()
+        if not tid:
+            continue
+        task = by_id.get(tid)
+        if not task:
+            skipped.append({"task_id": tid, "error": "task not found"})
+            continue
+        if not can_review_pass(task):
+            skipped.append({"task_id": tid, "error": "not eligible for auto-review"})
+            continue
+        eligible.append(tid)
+    if not eligible:
+        raise HTTPException(400, "没有可自动复验的任务（需 blocked + 复验 0/8）")
+
+    fixture = Path(body.fixture_root) if body.fixture_root else None
+
+    def target() -> None:
+        global _last_run
+        results: list[dict[str, Any]] = []
+        for tid in eligible:
+            try:
+                results.append(
+                    run_auto_review(
+                        root,
+                        tid,
+                        provider=body.provider,
+                        fixture_root=fixture,
+                        source_type=body.source_type,
+                    )
+                )
+            except Exception as exc:
+                results.append({"ok": False, "error": str(exc), "task_id": tid})
+        _last_run = {
+            "ok": all(bool(r.get("ok")) for r in results) if results else False,
+            "kind": "auto_review",
+            "batch": True,
+            "results": results,
+            "skipped": skipped,
+        }
+
+    with _lock:
+        _run_thread = threading.Thread(target=target, name="lcqa-auto-review-batch", daemon=True)
+        _run_thread.start()
+    return {
+        "ok": True,
+        "started": True,
+        "task_ids": eligible,
+        "count": len(eligible),
+        "skipped": skipped,
+        "snapshot": _snapshot(),
+    }
+
+
 @app.post("/api/queue/task/human-reject")
 def api_human_reject(body: HumanRejectBody) -> dict[str, Any]:
     """Post-pass or pending-review human QC reject: move delivery into failed-samples, mark gate_failed."""
@@ -458,6 +615,10 @@ def api_run_state() -> dict[str, Any]:
 
 def _busy() -> bool:
     return _run_thread is not None and _run_thread.is_alive()
+
+
+def _audit_busy() -> bool:
+    return _audit_thread is not None and _audit_thread.is_alive()
 
 
 @app.post("/api/run/start")
@@ -572,6 +733,9 @@ def main() -> None:
         _workspace = Path(info["path"])
         os.environ["LCQA_ROOT"] = str(_workspace)
     os.environ.setdefault("LCQA_CODE_ROOT", str(code_root()))
+    from desktop.backend.llm_client import install_ca_bundle
+
+    install_ca_bundle()
     import uvicorn
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
