@@ -1,0 +1,10 @@
+appId: com.lcqa.desktop
+productName: 长上下文QA
+directories:
+  output: dist
+files:
+  - out/**/*
+  - package.json
+mac:
+  target: dmg
+  category: public.app-category.developer-tools
