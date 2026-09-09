@@ -352,59 +352,23 @@
             </td>
             <td class="col-ended ended">{{ formatEndedAt(task) }}</td>
             <td class="col-actions">
-              <div
-                v-if="task.can_human_reject || task.can_review_pass || task.can_requeue || task.can_cancel"
-                class="row-actions"
+              <n-dropdown
+                v-if="taskHasActions(task)"
+                trigger="click"
+                placement="bottom-end"
+                :options="taskActionOptions(task)"
+                :disabled="running || statusBusy === task.id || batchBusy"
+                @select="(key) => onTaskActionSelect(key, task)"
               >
                 <button
-                  v-if="task.can_human_reject"
                   type="button"
-                  class="link danger-link"
+                  class="action-menu-btn"
                   :disabled="running || statusBusy === task.id || batchBusy"
-                  title="确认题/金标有问题：从待复验或 samples 迁入 failed-samples 并释放材料"
-                  @click="humanReject(task)"
                 >
-                  复检不通过？
+                  操作
+                  <span class="action-caret" aria-hidden="true">▾</span>
                 </button>
-                <button
-                  v-if="task.can_review_pass"
-                  type="button"
-                  class="link"
-                  :disabled="running || statusBusy === task.id || batchBusy || !reviewReady"
-                  :title="reviewReady ? '调用复验模型自动判定：通过则入库，不通过则打回' : '请先在设置中配置复验模型或判分密钥'"
-                  @click="autoReview(task)"
-                >
-                  自动复验
-                </button>
-                <button
-                  v-if="task.can_review_pass"
-                  type="button"
-                  class="link"
-                  :disabled="running || statusBusy === task.id || batchBusy"
-                  title="确认题/金标无误、0 分为模型答错后，补跑消融并以零分复验通过入库"
-                  @click="reviewPass(task)"
-                >
-                  复验通过
-                </button>
-                <button
-                  v-if="task.can_requeue"
-                  type="button"
-                  class="link"
-                  :disabled="running || statusBusy === task.id || batchBusy"
-                  @click="changeStatus(task.id, 'queued')"
-                >
-                  改回排队
-                </button>
-                <button
-                  v-if="task.can_cancel"
-                  type="button"
-                  class="link danger-link"
-                  :disabled="running || statusBusy === task.id || batchBusy"
-                  @click="changeStatus(task.id, 'cancelled')"
-                >
-                  取消
-                </button>
-              </div>
+              </n-dropdown>
               <span v-else class="muted">—</span>
             </td>
           </tr>
@@ -515,7 +479,7 @@
 
 <script setup lang="ts">
 import { computed, onDeactivated, onMounted, onUnmounted, ref, watch, type Directive } from "vue";
-import { NCheckbox, NCheckboxGroup, NDatePicker } from "naive-ui";
+import { NCheckbox, NCheckboxGroup, NDatePicker, NDropdown, type DropdownOption } from "naive-ui";
 import {
   ALL_QUEUE_STATUSES,
   QUEUE_STATUS_OPTIONS,
@@ -862,6 +826,79 @@ function selectAllStatuses() {
 }
 function clearStatuses() {
   selectedStatuses.value = [];
+}
+
+const DANGER_ACTION_STYLE = "color: #c53030";
+
+function taskHasActions(task: any): boolean {
+  return Boolean(task?.can_human_reject || task?.can_review_pass || task?.can_requeue || task?.can_cancel);
+}
+
+function taskActionOptions(task: any): DropdownOption[] {
+  const opts: DropdownOption[] = [];
+  if (task.can_human_reject) {
+    opts.push({
+      label: "复检不通过？",
+      key: "human_reject",
+      props: {
+        style: DANGER_ACTION_STYLE,
+        title: "确认题/金标有问题：从待复验或 samples 迁入 failed-samples 并释放材料",
+      },
+    });
+  }
+  if (task.can_review_pass) {
+    opts.push({
+      label: "自动复验",
+      key: "auto_review",
+      disabled: !reviewReady.value,
+      props: {
+        title: reviewReady.value
+          ? "调用复验模型自动判定：通过则入库，不通过则打回"
+          : "请先在设置中配置复验模型或判分密钥",
+      },
+    });
+    opts.push({
+      label: "复验通过",
+      key: "review_pass",
+      props: {
+        title: "确认题/金标无误、0 分为模型答错后，补跑消融并以零分复验通过入库",
+      },
+    });
+  }
+  if (task.can_requeue) {
+    opts.push({ label: "改回排队", key: "requeue" });
+  }
+  if (task.can_cancel) {
+    opts.push({
+      label: "取消",
+      key: "cancel",
+      props: { style: DANGER_ACTION_STYLE },
+    });
+  }
+  return opts;
+}
+
+function onTaskActionSelect(key: string | number, task: any) {
+  const action = String(key);
+  if (action === "human_reject") {
+    void humanReject(task);
+    return;
+  }
+  if (action === "auto_review") {
+    void autoReview(task);
+    return;
+  }
+  if (action === "review_pass") {
+    void reviewPass(task);
+    return;
+  }
+  if (action === "requeue") {
+    void changeStatus(task.id, "queued");
+    return;
+  }
+  if (action === "cancel") {
+    void changeStatus(task.id, "cancelled");
+  }
 }
 
 async function changeStatus(taskId: string, status: "queued" | "cancelled") {
@@ -1662,7 +1699,8 @@ table {
   white-space: nowrap;
 }
 .board-table .col-actions {
-  width: 100px;
+  width: 88px;
+  white-space: nowrap;
 }
 .board-table .col-status :deep(.status),
 .board-table .col-pass :deep(.status) {
@@ -1773,11 +1811,31 @@ td {
   color: var(--muted);
   white-space: nowrap;
 }
-.row-actions {
-  display: flex;
-  flex-direction: column;
+.action-menu-btn {
+  display: inline-flex;
+  align-items: center;
   gap: 4px;
-  align-items: flex-start;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--primary-dark);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.action-menu-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: #ebf8ff;
+}
+.action-menu-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.action-caret {
+  font-size: 10px;
+  opacity: 0.7;
 }
 .batch-actions {
   display: inline-flex;
