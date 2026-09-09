@@ -1,0 +1,41 @@
+{
+  "name": "lcqa-desktop",
+  "version": "0.1.0",
+  "description": "长上下文 QA 本地生产 GUI",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "author": "LCQA",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview"
+  },
+  "build": {
+    "appId": "com.lcqa.desktop",
+    "productName": "长上下文 QA",
+    "directories": {
+      "buildResources": "resources"
+    },
+    "mac": {
+      "icon": "resources/icon.icns"
+    },
+    "win": {
+      "icon": "resources/icon.png"
+    },
+    "linux": {
+      "icon": "resources/icon.png"
+    }
+  },
+  "dependencies": {
+    "naive-ui": "^2.41.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "electron": "^35.1.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0"
+  }
+}

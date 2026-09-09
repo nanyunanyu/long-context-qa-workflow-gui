@@ -1,0 +1,1 @@
+"""LCQA desktop app package."""
