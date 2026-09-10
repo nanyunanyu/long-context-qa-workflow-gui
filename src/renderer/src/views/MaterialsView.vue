@@ -3,12 +3,30 @@
     <div class="bar">
       <h2>材料目录</h2>
       <button @click="load">刷新</button>
-      <button type="button" :disabled="auditBusy || !visiblePackCount" @click="auditVisible">
-        {{ auditBusy ? "审核中…" : "审核当前列表" }}
-      </button>
+      <n-dropdown
+        trigger="click"
+        placement="bottom-start"
+        :options="auditActionOptions"
+        :disabled="auditBusy"
+        @select="onAuditActionSelect"
+      >
+        <button
+          type="button"
+          class="ops-menu-btn"
+          :disabled="auditBusy"
+          title="审核当前列表或已勾选材料包"
+        >
+          {{ auditBusy ? "审核中…" : "操作" }}
+          <span class="action-caret" aria-hidden="true">▾</span>
+        </button>
+      </n-dropdown>
       <button type="button" :disabled="!auditBusy" @click="stopAudit">
         {{ auditStopping ? "停止中…" : "停止审核" }}
       </button>
+      <span v-if="selectedPackPaths.length" class="hint">
+        已选 {{ selectedPackPaths.length }}
+        <template v-if="hiddenSelectedCount">（另有 {{ hiddenSelectedCount }} 个被当前筛选隐藏）</template>
+      </span>
       <label class="search-field">
         搜索材料
         <input
@@ -45,6 +63,17 @@
               <n-checkbox :value="s.value" :label="s.label" />
             </div>
           </n-checkbox-group>
+
+          <h4 class="mt">审核</h4>
+          <div class="drawer-actions">
+            <button type="button" @click="selectAllAudits">全选</button>
+            <button type="button" @click="selectedAudits = []">清空</button>
+          </div>
+          <n-checkbox-group v-model:value="selectedAudits">
+            <div v-for="a in MATERIAL_AUDIT_OPTIONS" :key="a.value" class="check-row">
+              <n-checkbox :value="a.value" :label="a.label" />
+            </div>
+          </n-checkbox-group>
         </div>
       </div>
       <span class="hint">已显示 {{ visiblePackCount }} / {{ totalPackCount }} 包</span>
@@ -68,36 +97,58 @@
         </colgroup>
         <thead>
           <tr>
-            <th>包</th>
+            <th>
+              <div class="pack-head">
+                <input
+                  type="checkbox"
+                  :checked="domainAllSelected(domain)"
+                  :indeterminate="domainSomeSelected(domain)"
+                  :disabled="auditBusy || !domain.packs?.length"
+                  @change="toggleDomainPacks(domain)"
+                />
+                包
+              </div>
+            </th>
             <th>状态</th>
             <th>审核</th>
             <th>提示</th>
-            <th></th>
+            <th class="col-action">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="pack in domain.packs" :key="pack.path">
             <td>
-              <div class="slug-cell">
-                <div class="slug-tags">
-                  <span
-                    class="domain-tag"
-                    :class="'tone-' + domainTagTone(String(pack.domain_key || domain.domain_key || ''))"
-                    :title="String(pack.domain_key || domain.domain_key || '')"
-                  >
-                    {{ domain.domain || pack.domain_key || domain.domain_key || "—" }}
-                  </span>
-                  <template v-for="kind in [docKindPresentation(pack.doc_count, pack.doc_kind)]" :key="pack.path + '-dk'">
-                    <span v-if="kind.show" class="meta-chip" :class="'tone-' + kind.tone" :title="kind.title">
-                      {{ kind.label }}
-                    </span>
-                  </template>
+              <div class="pack-cell">
+                <input
+                  type="checkbox"
+                  class="pack-check"
+                  :checked="selectedPackSet.has(packPath(pack))"
+                  :disabled="auditBusy"
+                  @change="togglePack(pack)"
+                />
+                <div class="pack-body">
+                  <div class="slug-cell">
+                    <div class="slug-tags">
+                      <span
+                        class="domain-tag"
+                        :class="'tone-' + domainTagTone(String(pack.domain_key || domain.domain_key || ''))"
+                        :title="String(pack.domain_key || domain.domain_key || '')"
+                      >
+                        {{ domain.domain || pack.domain_key || domain.domain_key || "—" }}
+                      </span>
+                      <template v-for="kind in [docKindPresentation(pack.doc_count, pack.doc_kind)]" :key="pack.path + '-dk'">
+                        <span v-if="kind.show" class="meta-chip" :class="'tone-' + kind.tone" :title="kind.title">
+                          {{ kind.label }}
+                        </span>
+                      </template>
+                    </div>
+                    <span class="pack-name" :title="pack.pack">{{ pack.pack }}</span>
+                  </div>
+                  <div class="muted pack-path">{{ pack.path }}</div>
                 </div>
-                <span class="pack-name" :title="pack.pack">{{ pack.pack }}</span>
               </div>
-              <div class="muted pack-path">{{ pack.path }}</div>
             </td>
-            <td>
+            <td class="cell-chip">
               <template v-for="st in [materialStatusPresentation(pack.status)]" :key="pack.path + '-st'">
                 <span class="meta-chip" :class="'tone-' + st.bucket" :title="st.title">
                   {{ st.label }}
@@ -105,7 +156,7 @@
                 <div v-if="st.detail" class="cell-note">{{ st.detail }}</div>
               </template>
             </td>
-            <td>
+            <td class="cell-chip">
               <template v-for="au in [auditPresentation(pack.llm_audit)]" :key="pack.path + '-au'">
                 <button
                   type="button"
@@ -118,7 +169,7 @@
                 </button>
               </template>
             </td>
-            <td>
+            <td class="cell-chip">
               <template v-for="hn in [hintPresentation(pack)]" :key="pack.path + '-hn'">
                 <span class="meta-chip" :class="'tone-' + hn.tone" :title="hn.title">
                   {{ hn.label }}
@@ -126,8 +177,13 @@
                 <div v-if="hn.detail" class="cell-note">{{ hn.detail }}</div>
               </template>
             </td>
-            <td>
-              <button type="button" class="link" :disabled="auditBusy" @click="auditOne(pack, domain.domain_key)">
+            <td class="col-action">
+              <button
+                type="button"
+                class="audit-action-btn"
+                :disabled="auditBusy"
+                @click="auditOne(pack, domain.domain_key)"
+              >
                 审核
               </button>
             </td>
@@ -166,7 +222,7 @@
 
 <script setup lang="ts">
 import { computed, onDeactivated, onMounted, onUnmounted, ref, watch, type Directive } from "vue";
-import { NCheckbox, NCheckboxGroup } from "naive-ui";
+import { NCheckbox, NCheckboxGroup, NDropdown, type DropdownOption } from "naive-ui";
 import { apiGet, apiPost, apiPut, domainTagTone, docKindPresentation, docKindSearchText, matchesMaterialQuery } from "../api";
 
 const props = defineProps<{ initialPrefs?: any }>();
@@ -192,12 +248,25 @@ const MATERIAL_STATUS_OPTIONS = [
   { value: "OTHER", label: "其他" },
 ] as const;
 
+const MATERIAL_AUDIT_OPTIONS = [
+  { value: "pass", label: "审核通过" },
+  { value: "fail", label: "审核未通过" },
+  { value: "none", label: "未审核" },
+] as const;
+
 const ALL_STATUS_KEYS = MATERIAL_STATUS_OPTIONS.map((o) => o.value);
+const ALL_AUDIT_KEYS = MATERIAL_AUDIT_OPTIONS.map((o) => o.value);
 
 function statusesFromPrefs(prefs: any): string[] | null {
   const saved = prefs?.materials?.selected_statuses;
   if (!Array.isArray(saved)) return null;
   return saved.filter((s: string) => ALL_STATUS_KEYS.includes(s as any));
+}
+
+function auditsFromPrefs(prefs: any): string[] | null {
+  const saved = prefs?.materials?.selected_audits;
+  if (!Array.isArray(saved)) return null;
+  return saved.filter((s: string) => ALL_AUDIT_KEYS.includes(s as any));
 }
 
 function domainsFromPrefs(prefs: any): string[] | null {
@@ -211,6 +280,7 @@ const filterOpen = ref(false);
 const packSearch = ref("");
 const auditBusy = ref(false);
 const auditStopping = ref(false);
+const selectedPackPaths = ref<string[]>([]);
 const auditMessage = ref("");
 const auditError = ref(false);
 const auditDialog = ref({
@@ -231,12 +301,21 @@ function closeFilter() {
   filterOpen.value = false;
 }
 const statusHydrated = statusesFromPrefs(props.initialPrefs);
+const auditHydrated = auditsFromPrefs(props.initialPrefs);
 const selectedDomains = ref<string[]>([]);
 const selectedStatuses = ref<string[]>(statusHydrated ?? [...ALL_STATUS_KEYS]);
+const selectedAudits = ref<string[]>(auditHydrated ?? [...ALL_AUDIT_KEYS]);
 const domainsInitialized = ref(false);
 const prefsReady = ref(false);
 const savedDomains = ref<string[] | null>(domainsFromPrefs(props.initialPrefs));
 let saveTimer: number | undefined;
+
+function auditFilterBucket(audit: any): "pass" | "fail" | "none" {
+  const status = String(audit?.status || "").trim().toLowerCase();
+  if (status === "pass") return "pass";
+  if (status === "fail" || status === "warn") return "fail";
+  return "none";
+}
 
 function materialStatusBucket(status: string): string {
   const s = String(status || "").toUpperCase();
@@ -292,6 +371,7 @@ const totalPackCount = computed(() =>
 const visibleDomains = computed(() => {
   const domainSet = new Set(selectedDomains.value);
   const statusSet = new Set(selectedStatuses.value);
+  const auditSet = new Set(selectedAudits.value);
   const q = packSearch.value;
   return (data.value.domains || [])
     .filter((d: any) => domainSet.has(String(d.domain_key || "")))
@@ -299,6 +379,7 @@ const visibleDomains = computed(() => {
       ...d,
       packs: (d.packs || []).filter((p: any) => {
         if (!statusSet.has(materialStatusBucket(p.status))) return false;
+        if (!auditSet.has(auditFilterBucket(p.llm_audit))) return false;
         return matchesMaterialQuery(
           q,
           p.pack,
@@ -320,11 +401,101 @@ const visiblePackCount = computed(() =>
   visibleDomains.value.reduce((n: number, d: any) => n + (d.packs?.length || 0), 0)
 );
 
+function packPath(pack: any): string {
+  return String(pack?.path || `${pack?.domain_key || ""}::${pack?.pack || ""}`);
+}
+
+const selectedPackSet = computed(() => new Set(selectedPackPaths.value));
+
+const visiblePackPathSet = computed(() => {
+  const paths = new Set<string>();
+  for (const domain of visibleDomains.value) {
+    for (const pack of domain.packs || []) paths.add(packPath(pack));
+  }
+  return paths;
+});
+
+const hiddenSelectedCount = computed(
+  () => selectedPackPaths.value.filter((path) => !visiblePackPathSet.value.has(path)).length
+);
+
+function domainSelectedCount(domain: any): number {
+  return (domain?.packs || []).filter((pack: any) => selectedPackSet.value.has(packPath(pack))).length;
+}
+
+function domainAllSelected(domain: any): boolean {
+  const packs = domain?.packs || [];
+  return packs.length > 0 && domainSelectedCount(domain) === packs.length;
+}
+
+function domainSomeSelected(domain: any): boolean {
+  const n = domainSelectedCount(domain);
+  return n > 0 && n < (domain?.packs || []).length;
+}
+
+function togglePack(pack: any) {
+  const key = packPath(pack);
+  const next = new Set(selectedPackPaths.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  selectedPackPaths.value = [...next];
+}
+
+function toggleDomainPacks(domain: any) {
+  const keys = (domain?.packs || []).map((pack: any) => packPath(pack));
+  const next = new Set(selectedPackPaths.value);
+  if (keys.length && keys.every((key: string) => next.has(key))) {
+    keys.forEach((key: string) => next.delete(key));
+  } else {
+    keys.forEach((key: string) => next.add(key));
+  }
+  selectedPackPaths.value = [...next];
+}
+
+function pruneSelection() {
+  const alive = new Set<string>();
+  for (const domain of data.value.domains || []) {
+    for (const pack of domain.packs || []) alive.add(packPath(pack));
+  }
+  selectedPackPaths.value = selectedPackPaths.value.filter((path) => alive.has(path));
+}
+
+function withCount(label: string, count: number) {
+  return count ? `${label}（${count}）` : label;
+}
+
+const auditActionOptions = computed<DropdownOption[]>(() => [
+  {
+    label: withCount("审核当前列表", visiblePackCount.value),
+    key: "visible",
+    disabled: auditBusy.value || !visiblePackCount.value,
+    props: {
+      title: visiblePackCount.value ? "审核当前筛选可见的全部材料包" : "当前列表没有可审核的材料包",
+    },
+  },
+  {
+    label: withCount("审核勾选项", selectedPackPaths.value.length),
+    key: "selected",
+    disabled: auditBusy.value || !selectedPackPaths.value.length,
+    props: {
+      title: selectedPackPaths.value.length ? "审核已勾选的材料包" : "请先勾选材料包",
+    },
+  },
+]);
+
+function onAuditActionSelect(key: string | number) {
+  if (key === "visible") return auditVisible();
+  if (key === "selected") return auditSelected();
+}
+
 function selectAllDomains() {
   selectedDomains.value = domainOptions.value.map((d: { value: string }) => d.value);
 }
 function selectAllStatuses() {
   selectedStatuses.value = [...ALL_STATUS_KEYS];
+}
+function selectAllAudits() {
+  selectedAudits.value = [...ALL_AUDIT_KEYS];
 }
 
 function persistFilters(immediate = false) {
@@ -333,6 +504,7 @@ function persistFilters(immediate = false) {
     materials: {
       selected_domains: [...selectedDomains.value],
       selected_statuses: [...selectedStatuses.value],
+      selected_audits: [...selectedAudits.value],
     },
   };
   const run = () => {
@@ -365,12 +537,13 @@ watch(domainOptions, (opts) => {
   domainsInitialized.value = true;
 });
 
-watch([selectedDomains, selectedStatuses], () => persistFilters(false), { deep: true });
+watch([selectedDomains, selectedStatuses, selectedAudits], () => persistFilters(false), { deep: true });
 onDeactivated(() => persistFilters(true));
 onUnmounted(() => persistFilters(true));
 
 async function load() {
   data.value = await apiGet("/api/materials");
+  pruneSelection();
 }
 
 function auditLabel(status: string) {
@@ -560,13 +733,30 @@ function auditVisible() {
   return startAudit(packs);
 }
 
+function auditSelected() {
+  const want = new Set(selectedPackPaths.value);
+  const packs: Array<{ domain_key: string; pack: string }> = [];
+  for (const domain of data.value.domains || []) {
+    for (const pack of domain.packs || []) {
+      if (!want.has(packPath(pack))) continue;
+      packs.push({
+        domain_key: String(pack.domain_key || domain.domain_key || ""),
+        pack: String(pack.pack || ""),
+      });
+    }
+  }
+  return startAudit(packs);
+}
+
 onMounted(async () => {
   try {
     const prefs = await apiGet("/api/ui-prefs");
     const domainsSaved = domainsFromPrefs(prefs);
     const statusesSaved = statusesFromPrefs(prefs);
+    const auditsSaved = auditsFromPrefs(prefs);
     if (domainsSaved) savedDomains.value = domainsSaved;
     if (statusesSaved) selectedStatuses.value = statusesSaved;
+    if (auditsSaved) selectedAudits.value = auditsSaved;
     if (prefs) emit("prefsSaved", prefs);
   } catch {
     /* defaults */
@@ -680,19 +870,19 @@ table.materials-table {
   font-size: 14px;
 }
 .materials-table .col-pack {
-  width: 36%;
+  width: 34%;
 }
 .materials-table .col-status {
   width: 14%;
 }
 .materials-table .col-audit {
-  width: 22%;
+  width: 20%;
 }
 .materials-table .col-hint {
-  width: 22%;
+  width: 20%;
 }
 .materials-table .col-action {
-  width: 6%;
+  width: 12%;
 }
 .materials-table th,
 .materials-table td {
@@ -702,10 +892,43 @@ table.materials-table {
   vertical-align: top;
   overflow: hidden;
 }
-.materials-table th:last-child,
-.materials-table td:last-child {
-  text-align: right;
+.materials-table td.cell-chip {
+  vertical-align: middle;
+}
+.materials-table th.col-action,
+.materials-table td.col-action {
+  text-align: center;
+  vertical-align: middle;
   white-space: nowrap;
+  overflow: visible;
+}
+.ops-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.action-caret {
+  font-size: 10px;
+  opacity: 0.7;
+}
+.pack-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.pack-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.pack-check {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+.pack-body {
+  min-width: 0;
+  flex: 1;
 }
 .slug-cell {
   display: flex;
@@ -818,20 +1041,13 @@ button {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  border: 1px solid transparent;
-}
-.slug-tags .meta-chip {
   padding: 0 6px;
   font-size: 11px;
   font-weight: 500;
   line-height: 1.5;
   letter-spacing: 0.01em;
+  white-space: nowrap;
+  border: 1px solid transparent;
 }
 .meta-chip.tone-READY,
 .meta-chip.tone-ok,
@@ -880,17 +1096,29 @@ button {
   overflow: hidden;
   word-break: break-word;
 }
-button.link {
-  border: 0;
-  background: transparent;
+.audit-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  background: #fff;
   color: var(--primary);
-  padding: 0;
+  border-radius: 6px;
+  padding: 4px 10px;
   font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
   cursor: pointer;
 }
-button.link:disabled,
+.audit-action-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: #ebf8ff;
+}
+.audit-action-btn:disabled,
 button:disabled {
   opacity: 0.45;
+  cursor: not-allowed;
 }
 button.primary {
   background: var(--primary);
@@ -902,11 +1130,11 @@ button.primary {
   align-items: center;
   border: 1px solid transparent;
   border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: 0.02em;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
   white-space: nowrap;
   cursor: pointer;
   background: #e2e8f0;

@@ -784,6 +784,52 @@ class MaterialSelectTests(unittest.TestCase):
                 self.assertIn("--include-used", enq_cmds[0])
                 self.assertEqual(enq_cmds[0][enq_cmds[0].index("--question-type") + 1], "auto")
 
+    def test_stage_selected_pack_failure_surfaces_stdout_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "ws"
+            (root / "queue").mkdir(parents=True)
+            (root / "workflow").mkdir(parents=True)
+            (root / "workflow" / "stage_from_materials.py").write_text("print('{}')\n", encoding="utf-8")
+            (root / "workflow" / "queue_worker.py").write_text("print('{}')\n", encoding="utf-8")
+
+            def fake_popen(cmd, workspace, **kwargs):
+                if "stage_from_materials.py" in " ".join(cmd):
+                    (root / "queue" / "pending_packs.json").write_text(
+                        json.dumps({"packs": []}) + "\n", encoding="utf-8"
+                    )
+                    stdout = json.dumps(
+                        {
+                            "staged": 0,
+                            "skipped": 1,
+                            "errors": [
+                                {
+                                    "slug": "detective-mystery-of-the-yellow-room",
+                                    "error": "pack mystery-of-the-yellow-room staged only ~66 tokens (<16000)",
+                                }
+                            ],
+                        }
+                    )
+                    return subprocess.CompletedProcess(cmd, 1, stdout=stdout, stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="{}", stderr="")
+
+            with (
+                patch.object(desktop_runner, "popen_run", side_effect=fake_popen),
+                patch.object(desktop_runner, "emit_event"),
+                patch.object(desktop_runner, "raise_if_paused"),
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    desktop_runner._stage_and_enqueue(
+                        root,
+                        limit=1,
+                        prefer_cold=True,
+                        include_hot=False,
+                        domain=None,
+                        provider="fixture",
+                        include_used=False,
+                        packs=[{"domain_key": "detective", "pack": "mystery-of-the-yellow-room"}],
+                    )
+            self.assertIn("staged only ~66 tokens", str(raised.exception))
+
     def test_run_body_accepts_board_question_type(self) -> None:
         from pydantic import ValidationError
 
@@ -843,7 +889,11 @@ class UiPrefsAndQueueOpsTests(unittest.TestCase):
                             "date_to": "2026-09-08",
                             "question_type": "auto",
                         },
-                        "materials": {"selected_domains": ["academic"], "selected_statuses": ["READY"]},
+                        "materials": {
+                            "selected_domains": ["academic"],
+                            "selected_statuses": ["READY"],
+                            "selected_audits": ["pass", "none"],
+                        },
                     }
                 )
                 self.assertEqual(prefs["last_workspace"], "/tmp/demo")
@@ -853,6 +903,7 @@ class UiPrefsAndQueueOpsTests(unittest.TestCase):
                 self.assertEqual(prefs["board"]["question_type"], "auto")
                 again = ui_prefs.get_ui_prefs()
                 self.assertEqual(again["materials"]["selected_domains"], ["academic"])
+                self.assertEqual(again["materials"]["selected_audits"], ["pass", "none"])
                 self.assertEqual(again["board"]["date_from"], "2026-09-07")
                 ui_prefs.push_recent(Path(directory) / "ws-a")
                 data = json.loads(path.read_text(encoding="utf-8"))

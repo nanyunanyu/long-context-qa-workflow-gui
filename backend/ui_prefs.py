@@ -21,6 +21,7 @@ DEFAULT_UI: dict[str, Any] = {
     "materials": {
         "selected_domains": None,
         "selected_statuses": None,
+        "selected_audits": None,
     },
 }
 
@@ -99,6 +100,7 @@ def get_ui_prefs() -> dict[str, Any]:
         "materials": {
             "selected_domains": materials.get("selected_domains"),
             "selected_statuses": materials.get("selected_statuses"),
+            "selected_audits": materials.get("selected_audits"),
         },
     }
 

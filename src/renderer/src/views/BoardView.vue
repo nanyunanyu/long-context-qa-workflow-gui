@@ -43,15 +43,6 @@
         <button :disabled="!running" @click="stop">停止</button>
         <button class="danger" :disabled="!running" @click="interrupt">立即中断</button>
         <button :disabled="running" @click="resume">继续</button>
-        <span
-          class="run-status"
-          :class="'tone-' + runStatusTone"
-          :title="runStatusTitle"
-        >
-          <span class="run-status-dot" aria-hidden="true" />
-          <span class="run-status-text">{{ runStatusLabel }}</span>
-        </span>
-        <span v-if="runStatusClaimed != null" class="run-status-claimed">已领 {{ runStatusClaimed }}</span>
       </div>
       <p class="muted rule-hint">{{ questionTypeHint }}</p>
     </section>
@@ -155,7 +146,6 @@
                     </template>
                     <template v-for="au in [packAuditChip(pack)]" :key="pack.key + '-au'">
                       <button
-                        v-if="au"
                         type="button"
                         class="review-chip"
                         :class="'tone-' + au.tone"
@@ -197,7 +187,7 @@
 
     <section class="card">
       <div class="status-bar">
-        <div class="status-filters">
+        <div class="status-row status-lookup">
           <h2>生产状态</h2>
           <span class="hint">已筛 {{ filteredTasks.length }} / {{ tasks.length }}</span>
           <label class="search-field inline-search">
@@ -226,6 +216,8 @@
               </n-checkbox-group>
             </div>
           </div>
+        </div>
+        <div class="status-row status-tools">
           <div class="date-filter-group">
             <label class="date-filter" title="按结束日筛选已完结任务；排队/运行中不受日期影响">
               起日
@@ -257,30 +249,30 @@
               清空日期
             </button>
           </div>
-        </div>
-        <div class="status-actions">
-          <button type="button" :disabled="running || !selectableFiltered.length" @click="selectAllFiltered">
-            全选当前筛选
-          </button>
-          <button type="button" :disabled="!selectedTaskIds.length" @click="clearTaskSelection">清空选择</button>
-          <span v-if="selectedTaskIds.length" class="hint">已选 {{ selectedTaskIds.length }}</span>
-          <n-dropdown
-            trigger="click"
-            placement="bottom-end"
-            :options="batchActionOptions"
-            :disabled="batchMenuDisabled"
-            @select="onBatchActionSelect"
-          >
-            <button
-              type="button"
-              class="batch-menu-btn"
-              :disabled="batchMenuDisabled"
-              title="对已选任务执行批量操作"
-            >
-              批量操作
-              <span class="action-caret" aria-hidden="true">▾</span>
+          <div class="status-actions">
+            <button type="button" :disabled="running || !selectableFiltered.length" @click="selectAllFiltered">
+              全选当前筛选
             </button>
-          </n-dropdown>
+            <button type="button" :disabled="!selectedTaskIds.length" @click="clearTaskSelection">清空选择</button>
+            <span v-if="selectedTaskIds.length" class="hint">已选 {{ selectedTaskIds.length }}</span>
+            <n-dropdown
+              trigger="click"
+              placement="bottom-end"
+              :options="batchActionOptions"
+              :disabled="batchMenuDisabled"
+              @select="onBatchActionSelect"
+            >
+              <button
+                type="button"
+                class="batch-menu-btn"
+                :disabled="batchMenuDisabled"
+                title="对已选任务执行批量操作"
+              >
+                批量操作
+                <span class="action-caret" aria-hidden="true">▾</span>
+              </button>
+            </n-dropdown>
+          </div>
         </div>
       </div>
       <table class="board-table">
@@ -826,32 +818,6 @@ const batchMenuDisabled = computed(
     )
 );
 
-const RUN_STATUS_UI: Record<string, { label: string; tone: string }> = {
-  idle: { label: "空闲", tone: "idle" },
-  running: { label: "运行中", tone: "running" },
-  stopping: { label: "停止中", tone: "stopping" },
-  interrupted: { label: "已中断", tone: "interrupted" },
-};
-
-const runStatusLabel = computed(
-  () => RUN_STATUS_UI[runStatus.value]?.label || String(runStatus.value)
-);
-const runStatusTone = computed(
-  () => RUN_STATUS_UI[runStatus.value]?.tone || "idle"
-);
-const runStatusClaimed = computed(() => {
-  if (!["running", "stopping"].includes(runStatus.value)) return null;
-  const claimed = props.snapshot?.run?.claimed;
-  return claimed == null ? null : claimed;
-});
-const runStatusTitle = computed(() => {
-  const run = props.snapshot?.run || {};
-  const bits = [`状态码：${runStatus.value}`];
-  if (run.run_id) bits.push(`run_id：${run.run_id}`);
-  if (run.claimed != null) bits.push(`已领取：${run.claimed}`);
-  if (run.message) bits.push(String(run.message));
-  return bits.join(" · ");
-});
 const questionTypeHint = computed(() => {
   const shared =
     "出题语言与材料一致（英文材料用英语题/金标，中文材料用中文）。判分覆盖金标要点且无错误内容即可，不必字字对应。本批选项只作用于新入队任务。";
@@ -1524,9 +1490,11 @@ watch(
   }
 );
 
-function packAuditChip(pack: FlatPack): { label: string; tone: string; title: string } | null {
+function packAuditChip(pack: FlatPack): { label: string; tone: string; title: string } {
   const status = String(pack?.llm_audit?.status || "").trim().toLowerCase();
-  if (status !== "pass" && status !== "fail" && status !== "warn") return null;
+  if (status !== "pass" && status !== "fail" && status !== "warn") {
+    return { label: "未审核", tone: "pending", title: "尚未进行 LLM 选材审核（点击查看）" };
+  }
   const summary = String(pack?.llm_audit?.summary || "").trim();
   const label = status === "pass" ? "通过" : status === "warn" ? "警告" : "不通过";
   const tone = status === "pass" ? "pass" : status === "warn" ? "warn" : "fail";
@@ -1738,74 +1706,6 @@ onUnmounted(() => persistBoardFilters(true));
   align-items: center;
   gap: 8px;
 }
-.run-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  box-sizing: border-box;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  background: #f1f5f9;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
-  white-space: nowrap;
-}
-.run-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  flex-shrink: 0;
-}
-.run-status-text {
-  font-weight: 600;
-}
-.run-status-claimed {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.4;
-  white-space: nowrap;
-}
-.run-status.tone-idle {
-  background: #f1f5f9;
-  border-color: #e2e8f0;
-  color: #475569;
-}
-.run-status.tone-running {
-  background: #ecfdf5;
-  border-color: #a7f3d0;
-  color: #047857;
-}
-.run-status.tone-running .run-status-dot {
-  animation: run-status-pulse 1.4s ease-in-out infinite;
-}
-.run-status.tone-stopping {
-  background: #fffbeb;
-  border-color: #fde68a;
-  color: #b45309;
-}
-.run-status.tone-stopping .run-status-dot {
-  animation: run-status-pulse 1s ease-in-out infinite;
-}
-.run-status.tone-interrupted {
-  background: #fff1f2;
-  border-color: #fecdd3;
-  color: #be123c;
-}
-@keyframes run-status-pulse {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: scale(1.15);
-    opacity: 0.65;
-  }
-}
 .controls .rule-hint {
   flex-basis: 100%;
   margin: 0;
@@ -1819,12 +1719,21 @@ onUnmounted(() => persistBoardFilters(true));
   gap: 10px;
   margin-bottom: 12px;
 }
-.status-filters,
+.status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.status-tools {
+  justify-content: space-between;
+}
 .status-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 14px;
+  gap: 8px;
   align-items: center;
+  margin-left: auto;
 }
 .status-actions :deep(.n-dropdown-trigger) {
   display: inline-flex;
@@ -1924,9 +1833,8 @@ onUnmounted(() => persistBoardFilters(true));
   gap: 8px;
 }
 .mode-bar h2,
-.status-filters h2 {
+.status-row h2 {
   margin: 0;
-  margin-right: 8px;
 }
 .collapse-btn {
   padding: 4px 10px;
@@ -2288,6 +2196,11 @@ td {
   color: #9f1239;
   background: #ffe4e6;
   border-color: #fecdd3;
+}
+.review-chip.tone-pending {
+  color: #334155;
+  background: #e2e8f0;
+  border-color: #cbd5e1;
 }
 .review-chip.tone-abort {
   color: #9a3412;
