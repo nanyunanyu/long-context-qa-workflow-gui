@@ -682,6 +682,23 @@ class MaterialSelectTests(unittest.TestCase):
             self.assertEqual(raffles["doc_kind"], "multi")
             self.assertGreaterEqual(raffles["doc_count"], 2)
 
+    def test_docs_for_production_honors_selected(self):
+        from desktop.backend.materials import doc_kind_for_count, docs_for_production
+
+        catalog = {
+            "selected": ["DOC1"],
+            "docs": [
+                {"doc_id": "DOC1", "title": "one"},
+                {"doc_id": "DOC2", "title": "two"},
+                {"doc_id": "DOC3", "title": "three"},
+            ],
+        }
+        docs = docs_for_production(catalog)
+        self.assertEqual([item["doc_id"] for item in docs], ["DOC1"])
+        self.assertEqual(doc_kind_for_count(len(docs)), "single")
+        self.assertEqual(doc_kind_for_count(3), "multi")
+        self.assertEqual(docs_for_production({"docs": catalog["docs"]}), catalog["docs"])
+
     def test_run_pipeline_rejects_empty_pack_list(self):
         with self.assertRaises(ValueError):
             desktop_runner.run_pipeline(
@@ -1748,6 +1765,29 @@ class MaterialAuditTests(unittest.TestCase):
             self.assertEqual(saved["llm_audit"]["status"], "pass")
             self.assertEqual(saved["llm_audit"]["summary"], "冷源且足够长")
             self.assertEqual(saved["theme"], "niche protocol exceptions")
+
+    def test_audit_user_message_uses_selected_docs_and_marks_single_ok(self) -> None:
+        from desktop.backend.material_audit import build_audit_user_message
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog_path = self._write_pack(root, "demo-pack")
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+            catalog["selected"] = ["DOC1"]
+            catalog["docs"].append(
+                {
+                    "doc_id": "DOC2",
+                    "title": "ignored extra",
+                    "file_md": "materials/example/demo-pack/md/missing.md",
+                }
+            )
+            pack_dir = catalog_path.parent
+            text = build_audit_user_message(root, pack_dir, catalog)
+            self.assertIn('"doc_kind": "single"', text)
+            self.assertIn('"doc_count": 1', text)
+            self.assertIn('"single_doc_ok": true', text)
+            self.assertIn("DOC1", text)
+            self.assertNotIn("ignored extra", text)
 
     def test_audit_packs_stops_remaining(self) -> None:
         from desktop.backend import material_audit as audit_mod

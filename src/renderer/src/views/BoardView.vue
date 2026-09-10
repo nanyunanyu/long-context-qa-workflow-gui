@@ -38,18 +38,21 @@
         <input v-model="retryTechnical" type="checkbox" />
         续跑技术失败
       </label>
-      <button class="primary" :disabled="running" @click="start">开始</button>
-      <button :disabled="!running" @click="stop">停止</button>
-      <button class="danger" :disabled="!running" @click="interrupt">立即中断</button>
-      <button :disabled="running" @click="resume">继续</button>
-      <span
-        class="run-status"
-        :class="'tone-' + runStatusTone"
-        :title="runStatusTitle"
-      >
-        <span class="run-status-dot" aria-hidden="true" />
-        <span class="run-status-text">运行状态 · {{ runStatusLabel }}</span>
-      </span>
+      <div class="controls-actions">
+        <button class="primary" :disabled="running" @click="start">开始</button>
+        <button :disabled="!running" @click="stop">停止</button>
+        <button class="danger" :disabled="!running" @click="interrupt">立即中断</button>
+        <button :disabled="running" @click="resume">继续</button>
+        <span
+          class="run-status"
+          :class="'tone-' + runStatusTone"
+          :title="runStatusTitle"
+        >
+          <span class="run-status-dot" aria-hidden="true" />
+          <span class="run-status-text">{{ runStatusLabel }}</span>
+        </span>
+        <span v-if="runStatusClaimed != null" class="run-status-claimed">已领 {{ runStatusClaimed }}</span>
+      </div>
       <p class="muted rule-hint">{{ questionTypeHint }}</p>
     </section>
 
@@ -111,15 +114,22 @@
             <input v-model="allowRerunUsed" type="checkbox" :disabled="running" />
             允许重跑已用/失败包
           </label>
-          <button type="button" :disabled="running" @click="selectReady">全选就绪</button>
-          <button type="button" :disabled="running" @click="clearSelection">清空</button>
         </div>
         <p v-if="loadError" class="error">{{ loadError }}</p>
         <div class="pack-list">
           <table>
             <thead>
               <tr>
-                <th style="width: 36px"></th>
+                <th class="col-pack-check">
+                  <input
+                    type="checkbox"
+                    :checked="allSelectablePacksSelected"
+                    :indeterminate.prop="someSelectablePacksSelected && !allSelectablePacksSelected"
+                    :disabled="running || !selectableVisiblePacks.length"
+                    title="全选 / 全部不选当前列表"
+                    @change="toggleSelectAllPacks"
+                  />
+                </th>
                 <th>材料包</th>
                 <th>状态</th>
                 <th>提示</th>
@@ -144,9 +154,16 @@
                       </span>
                     </template>
                     <template v-for="au in [packAuditChip(pack)]" :key="pack.key + '-au'">
-                      <span v-if="au" class="meta-chip" :class="'tone-' + au.tone" :title="au.title">
+                      <button
+                        v-if="au"
+                        type="button"
+                        class="review-chip"
+                        :class="'tone-' + au.tone"
+                        :title="au.title"
+                        @click="openPackAuditDialog(pack)"
+                      >
                         {{ au.label }}
-                      </span>
+                      </button>
                     </template>
                   </div>
                   <div class="muted">{{ pack.domain_key }} · {{ pack.path }}</div>
@@ -170,10 +187,10 @@
         </div>
         <p class="muted">
           自选模式下本批条数 = 将实际入队的包数量。默认只计 READY；勾选「允许重跑已用/失败包」才会计入已用包并带
-          --include-used。「全选就绪」只选当前列表中的 READY，并清空其它勾选。
+          --include-used。表头勾选框可全选 / 清空当前列表中的可选材料包。
         </p>
         <p v-if="hiddenSelectedCount" class="warn-hint">
-          当前筛选下有 {{ hiddenSelectedCount }} 个已选包未显示，本批条数仍计入它们。可点「清空」或去掉领域/搜索筛选查看。
+          当前筛选下有 {{ hiddenSelectedCount }} 个已选包未显示，本批条数仍计入它们。可点表头勾选框清空，或去掉领域/搜索筛选查看。
         </p>
       </template>
     </section>
@@ -279,7 +296,6 @@
             </th>
             <th class="col-status">状态</th>
             <th class="col-material">材料</th>
-            <th class="col-queue">队列</th>
             <th class="col-stage">阶段</th>
             <th class="col-pass">通过</th>
             <th class="col-ended">结束</th>
@@ -321,7 +337,6 @@
                 同材料重复 · 请取消本条，保留 {{ task.duplicate_of }}
               </div>
             </td>
-            <td class="col-queue">{{ queueStatusLabel(task.status, task) }}</td>
             <td class="col-stage"><StageProgress :task="task" :snapshot="snapshot" /></td>
             <td class="col-pass">
               <div class="pass-stack">
@@ -365,10 +380,10 @@
             </td>
           </tr>
           <tr v-if="!tasks.length">
-            <td colspan="8" class="muted">队列为空。请先选择材料并点开始，或放入材料后用自动挑选。</td>
+            <td colspan="7" class="muted">队列为空。请先选择材料并点开始，或放入材料后用自动挑选。</td>
           </tr>
           <tr v-else-if="!filteredTasks.length">
-            <td colspan="8" class="muted">
+            <td colspan="7" class="muted">
               {{ taskSearch.trim() ? "没有匹配当前材料搜索的任务。" : "当前筛选无任务。" }}
             </td>
           </tr>
@@ -410,6 +425,29 @@
           >
             {{ rejectDialog.batch ? "确认批量打回" : "确认打回" }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="packAuditDialog.open" class="modal-backdrop" @click.self="closePackAuditDialog">
+      <div class="modal-card modal-wide" role="dialog" aria-label="材料审核结果">
+        <h3>材料审核结果</h3>
+        <p class="muted">
+          材料包 <strong>{{ packAuditDialog.pack }}</strong>
+        </p>
+        <p class="review-verdict" :class="'tone-' + packAuditDialog.tone">{{ packAuditDialog.headline }}</p>
+        <p class="modal-reason">{{ packAuditDialog.summary || "—" }}</p>
+        <p v-if="packAuditDialog.notes" class="modal-reason">{{ packAuditDialog.notes }}</p>
+        <ul class="modal-checks">
+          <li>许可可用：{{ boolLabel(packAuditDialog.licenseOk) }}</li>
+          <li>体量足够：{{ boolLabel(packAuditDialog.enoughLength) }}</li>
+          <li>长上下文潜力：{{ boolLabel(packAuditDialog.longContextPotential) }}</li>
+          <li>足够冷门：{{ boolLabel(packAuditDialog.coldEnough) }}</li>
+          <li>模型：{{ packAuditDialog.model || "—" }}</li>
+          <li>时间：{{ packAuditDialog.reviewedAt || "—" }}</li>
+        </ul>
+        <div class="modal-actions">
+          <button type="button" class="primary" @click="closePackAuditDialog">关闭</button>
         </div>
       </div>
     </div>
@@ -488,7 +526,6 @@ import {
   passColumnLabel,
   passColumnTitle,
   passVisualState,
-  queueStatusLabel,
   taskFilterDay,
   taskMatchesMaterialQuery,
   taskSlugParts,
@@ -657,6 +694,20 @@ const rejectDialog = ref({
   pendingReview: false,
   batch: false,
 });
+const packAuditDialog = ref({
+  open: false,
+  pack: "",
+  tone: "pending",
+  headline: "尚未进行 LLM 选材审核",
+  summary: "",
+  notes: "",
+  licenseOk: null as boolean | null,
+  enoughLength: null as boolean | null,
+  longContextPotential: null as boolean | null,
+  coldEnough: null as boolean | null,
+  model: "",
+  reviewedAt: "",
+});
 let statusSaveTimer: number | undefined;
 let materialsSaveTimer: number | undefined;
 
@@ -784,6 +835,11 @@ const runStatusLabel = computed(
 const runStatusTone = computed(
   () => RUN_STATUS_UI[runStatus.value]?.tone || "idle"
 );
+const runStatusClaimed = computed(() => {
+  if (!["running", "stopping"].includes(runStatus.value)) return null;
+  const claimed = props.snapshot?.run?.claimed;
+  return claimed == null ? null : claimed;
+});
 const runStatusTitle = computed(() => {
   const run = props.snapshot?.run || {};
   const bits = [`状态码：${runStatus.value}`];
@@ -839,6 +895,19 @@ const visiblePacks = computed(() =>
     }
     return true;
   })
+);
+
+const selectableVisiblePacks = computed(() =>
+  visiblePacks.value.filter((p) => p.ready || showUsed.value)
+);
+
+const allSelectablePacksSelected = computed(() => {
+  const rows = selectableVisiblePacks.value;
+  return rows.length > 0 && rows.every((p) => selectedSet.value.has(p.key));
+});
+
+const someSelectablePacksSelected = computed(() =>
+  selectableVisiblePacks.value.some((p) => selectedSet.value.has(p.key))
 );
 
 /** Selected rows that still exist in materials catalog. */
@@ -1443,8 +1512,41 @@ function packAuditChip(pack: FlatPack): { label: string; tone: string; title: st
   return {
     label,
     tone,
-    title: summary ? `${label}：${summary}` : label,
+    title: summary ? `${label}：${summary}` : `${label}（点击查看详情）`,
   };
+}
+
+function packAuditHeadline(status: string) {
+  if (status === "pass") return "审核通过";
+  if (status === "warn") return "审核警告";
+  if (status === "fail") return "审核不通过";
+  return "尚未进行 LLM 选材审核";
+}
+
+function openPackAuditDialog(pack: FlatPack) {
+  const audit = pack?.llm_audit;
+  const status = String(audit?.status || "").trim().toLowerCase();
+  const chip = packAuditChip(pack);
+  const checks = audit?.checks && typeof audit.checks === "object" ? audit.checks : {};
+  const hasAudit = Boolean(status);
+  packAuditDialog.value = {
+    open: true,
+    pack: String(pack?.pack || ""),
+    tone: chip?.tone || "pending",
+    headline: packAuditHeadline(status),
+    summary: hasAudit ? String(audit?.summary || "").trim() : "尚未进行 LLM 选材审核",
+    notes: hasAudit ? String(audit?.notes || "").trim() : "",
+    licenseOk: hasAudit ? Boolean(checks.license_ok) : null,
+    enoughLength: hasAudit ? Boolean(checks.enough_length) : null,
+    longContextPotential: hasAudit ? Boolean(checks.long_context_potential) : null,
+    coldEnough: hasAudit ? Boolean(checks.cold_enough) : null,
+    model: hasAudit ? String(audit?.model || "") : "",
+    reviewedAt: hasAudit ? String(audit?.reviewed_at || "") : "",
+  };
+}
+
+function closePackAuditDialog() {
+  packAuditDialog.value.open = false;
 }
 
 function isSelected(key: string) {
@@ -1458,13 +1560,13 @@ function togglePack(pack: FlatPack) {
   selectedKeys.value = [...set];
 }
 
-function selectReady() {
-  // Replace selection: only current list READY packs (avoids hidden leftovers inflating 本批条数).
-  selectedKeys.value = visiblePacks.value.filter((p) => p.ready).map((p) => p.key);
-}
-
-function clearSelection() {
-  selectedKeys.value = [];
+function toggleSelectAllPacks() {
+  if (allSelectablePacksSelected.value) {
+    selectedKeys.value = [];
+    return;
+  }
+  // Replace selection with current list selectable packs (avoids hidden leftovers).
+  selectedKeys.value = selectableVisiblePacks.value.map((p) => p.key);
 }
 
 async function loadMaterials() {
@@ -1609,30 +1711,42 @@ onUnmounted(() => persistBoardFilters(true));
   gap: 12px 16px;
   align-items: flex-end;
 }
+.controls-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 .run-status {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   box-sizing: border-box;
-  padding: 8px 14px;
-  border-radius: 8px;
+  padding: 4px 10px;
+  border-radius: 999px;
   border: 1px solid transparent;
   background: #f1f5f9;
   color: #334155;
-  font-size: 14px;
-  line-height: 1.25;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
   white-space: nowrap;
 }
 .run-status-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
   flex-shrink: 0;
-  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.25);
 }
 .run-status-text {
   font-weight: 600;
+}
+.run-status-claimed {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 .run-status.tone-idle {
   background: #f1f5f9;
@@ -1645,7 +1759,6 @@ onUnmounted(() => persistBoardFilters(true));
   color: #047857;
 }
 .run-status.tone-running .run-status-dot {
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.22);
   animation: run-status-pulse 1.4s ease-in-out infinite;
 }
 .run-status.tone-stopping {
@@ -1654,16 +1767,12 @@ onUnmounted(() => persistBoardFilters(true));
   color: #b45309;
 }
 .run-status.tone-stopping .run-status-dot {
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.22);
   animation: run-status-pulse 1s ease-in-out infinite;
 }
 .run-status.tone-interrupted {
   background: #fff1f2;
   border-color: #fecdd3;
   color: #be123c;
-}
-.run-status.tone-interrupted .run-status-dot {
-  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.2);
 }
 @keyframes run-status-pulse {
   0%,
@@ -1877,6 +1986,9 @@ h2 {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+.pack-list .col-pack-check {
+  width: 36px;
+}
 .pack-title {
   display: flex;
   align-items: center;
@@ -1910,13 +2022,10 @@ table {
   width: 86px;
 }
 .board-table .col-material {
-  width: 248px;
-}
-.board-table .col-queue {
-  width: 72px;
+  width: 280px;
 }
 .board-table .col-stage {
-  width: 156px;
+  width: 176px;
   overflow: visible;
 }
 .board-table .col-pass {
@@ -1954,11 +2063,6 @@ td {
   padding: 8px 6px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
-}
-.col-queue {
-  white-space: nowrap;
-  writing-mode: horizontal-tb;
-  text-orientation: mixed;
 }
 .slug-cell {
   display: flex;
@@ -2142,6 +2246,11 @@ td {
   background: #dcfce7;
   border-color: #bbf7d0;
 }
+.review-chip.tone-warn {
+  color: #9a3412;
+  background: #ffedd5;
+  border-color: #fed7aa;
+}
 .review-chip.tone-fail {
   color: #9f1239;
   background: #ffe4e6;
@@ -2164,11 +2273,15 @@ td {
 .review-verdict.tone-pass {
   color: #166534;
 }
+.review-verdict.tone-warn {
+  color: #9a3412;
+}
 .review-verdict.tone-fail {
   color: #9f1239;
 }
 .review-verdict.tone-abort,
-.review-verdict.tone-running {
+.review-verdict.tone-running,
+.review-verdict.tone-pending {
   color: #9a3412;
 }
 .modal-reason {

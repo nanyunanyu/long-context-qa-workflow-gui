@@ -93,16 +93,36 @@ def scan_materials(root: Path) -> dict[str, Any]:
     }
 
 
+def docs_for_production(catalog: dict[str, Any], listed: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Docs that staging/generation will actually use (honors CATALOG.selected)."""
+    raw = catalog.get("docs") if isinstance(catalog.get("docs"), list) else []
+    docs = [item for item in raw if isinstance(item, dict)]
+    selected = listed.get("selected") if isinstance(listed, dict) else None
+    if not selected:
+        selected = catalog.get("selected")
+    chosen = {str(item) for item in selected} if isinstance(selected, list) else set()
+    if chosen:
+        docs = [item for item in docs if str(item.get("doc_id") or "") in chosen]
+    return docs
+
+
+def doc_kind_for_count(count: int) -> str:
+    if count <= 0:
+        return "unknown"
+    if count == 1:
+        return "single"
+    return "multi"
+
+
 def _pack_entry(root: Path, domain_key: str, name: str, pack_dir: Path, listed: dict[str, Any]) -> dict[str, Any]:
     pack_cat = _load(pack_dir / "CATALOG.json") if pack_dir.is_dir() else {}
-    docs = pack_cat.get("docs") if isinstance(pack_cat.get("docs"), list) else []
+    docs = docs_for_production(pack_cat, listed)
+    all_docs = [item for item in (pack_cat.get("docs") or []) if isinstance(item, dict)]
     doc_rows = []
     issues: list[str] = []
     if not (pack_dir / "CATALOG.json").is_file():
         issues.append("缺 CATALOG.json")
     for doc in docs:
-        if not isinstance(doc, dict):
-            continue
         doc_issues = _doc_issues(doc, pack_dir, root)
         doc_rows.append(
             {
@@ -116,14 +136,9 @@ def _pack_entry(root: Path, domain_key: str, name: str, pack_dir: Path, listed: 
         )
         issues.extend(doc_issues)
     doc_count = len(doc_rows)
-    if doc_count <= 0:
-        doc_kind = "unknown"
-    elif doc_count == 1:
-        doc_kind = "single"
-    else:
-        doc_kind = "multi"
+    doc_kind = doc_kind_for_count(doc_count)
     has_md = (pack_dir / "md").is_dir() and any((pack_dir / "md").iterdir()) if pack_dir.is_dir() else False
-    if not docs and not has_md:
+    if not all_docs and not has_md:
         issues.append("尚未放入文档")
     status = pack_cat.get("status") or listed.get("status") or "READY"
     audit = pack_cat.get("llm_audit") if isinstance(pack_cat.get("llm_audit"), dict) else None

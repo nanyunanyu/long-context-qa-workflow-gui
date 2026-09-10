@@ -3,16 +3,63 @@
     <div class="shell">
       <aside class="sidebar">
         <div class="brand">
-          <h1>长上下文 QA</h1>
-          <p>本地产线控制台</p>
+          <div class="brand-mark" aria-hidden="true">QA</div>
+          <div class="brand-text">
+            <h1>长上下文 QA</h1>
+            <p>本地产线控制台</p>
+          </div>
         </div>
         <nav class="menu">
-          <button :class="{ active: tab === 'workspace' }" @click="tab = 'workspace'">工作区</button>
-          <button :class="{ active: tab === 'board' }" @click="tab = 'board'">生产看板</button>
-          <button :class="{ active: tab === 'materials' }" @click="tab = 'materials'">材料</button>
-          <button :class="{ active: tab === 'settings' }" @click="tab = 'settings'">设置</button>
+          <button type="button" :class="{ active: tab === 'workspace' }" @click="tab = 'workspace'">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M2.5 6.5 8 2.5l5.5 4v6.5a1 1 0 0 1-1 1h-3.5V9.5H7v4.5H3.5a1 1 0 0 1-1-1Z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linejoin="round"
+              />
+            </svg>
+            <span>工作区</span>
+          </button>
+          <button type="button" :class="{ active: tab === 'board' }" @click="tab = 'board'">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="2.5" y="2.5" width="4.5" height="11" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" />
+              <rect x="9" y="2.5" width="4.5" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" />
+            </svg>
+            <span>生产看板</span>
+          </button>
+          <button type="button" :class="{ active: tab === 'materials' }" @click="tab = 'materials'">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M4 2.5h5.5L12.5 5.5v8a1 1 0 0 1-1 1h-7.5a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linejoin="round"
+              />
+              <path d="M9.5 2.5V5.5H12.5M5.5 8.5h5M5.5 11h3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+            <span>材料</span>
+          </button>
+          <button type="button" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">
+            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path
+                d="M6.66 3.34 6.99 1.23 9.01 1.23 9.34 3.34 10.35 3.76 12.07 2.49 13.51 3.93 12.24 5.65 12.66 6.66 14.77 6.99 14.77 9.01 12.66 9.34 12.24 10.35 13.51 12.07 12.07 13.51 10.35 12.24 9.34 12.66 9.01 14.77 6.99 14.77 6.66 12.66 5.65 12.24 3.93 13.51 2.49 12.07 3.76 10.35 3.34 9.34 1.23 9.01 1.23 6.99 3.34 6.66 3.76 5.65 2.49 3.93 3.93 2.49 5.65 3.76Z"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.35"
+                stroke-linejoin="miter"
+                stroke-miterlimit="3"
+              />
+              <circle cx="8" cy="8" r="2.15" fill="none" stroke="currentColor" stroke-width="1.35" />
+            </svg>
+            <span>设置</span>
+          </button>
         </nav>
-        <button v-if="workspace" class="reset" @click="resetWorkspace">更换目录</button>
+        <div class="sidebar-footer">
+          <button v-if="workspace" type="button" class="reset" @click="resetWorkspace">更换目录</button>
+        </div>
       </aside>
 
       <div class="content">
@@ -204,55 +251,124 @@ onUnmounted(() => {
   background: var(--bg);
 }
 .sidebar {
-  width: 200px;
-  flex: 0 0 200px;
+  width: 220px;
+  flex: 0 0 220px;
   align-self: stretch;
-  background: #fff;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 20px 14px;
+  padding: 20px 14px 16px;
   overflow: auto;
   box-sizing: border-box;
 }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px 16px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.brand-mark {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(145deg, #3182ce 0%, #2c5282 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  box-shadow: 0 4px 10px rgba(44, 82, 130, 0.22);
+}
+.brand-text {
+  min-width: 0;
+}
 .brand h1 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.25;
   color: var(--primary-dark);
 }
 .brand p {
-  margin: 4px 0 18px;
+  margin: 3px 0 0;
   font-size: 12px;
   color: var(--muted);
 }
 .menu {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 .menu button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
   text-align: left;
   border: 0;
   background: transparent;
   color: var(--primary-dark);
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
   cursor: pointer;
   font-size: 14px;
+  line-height: 1.2;
+  transition: background 150ms ease, color 150ms ease;
+}
+.menu button:hover {
+  background: #f0f7ff;
 }
 .menu button.active {
   background: #ebf8ff;
   color: var(--primary);
   font-weight: 600;
 }
-.reset {
+.menu button.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--primary);
+}
+.nav-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  opacity: 0.85;
+  overflow: visible;
+}
+.menu button.active .nav-icon {
+  opacity: 1;
+}
+.sidebar-footer {
   margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.reset {
+  width: 100%;
   border: 1px solid var(--border);
   background: #fff;
   color: var(--muted);
   border-radius: 8px;
   padding: 8px 12px;
   cursor: pointer;
+  font-size: 13px;
+  transition: border-color 150ms ease, color 150ms ease;
+}
+.reset:hover {
+  border-color: var(--primary);
+  color: var(--primary);
 }
 .content {
   flex: 1 1 auto;
@@ -267,6 +383,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 16px;
   padding: 18px 24px 12px;
   border-bottom: 1px solid var(--border);
   background: #fff;
@@ -275,7 +392,9 @@ onUnmounted(() => {
 .top h2 {
   margin: 0;
   font-size: 18px;
+  font-weight: 700;
   color: var(--primary-dark);
+  letter-spacing: 0.01em;
 }
 .path {
   margin: 4px 0 0;
@@ -283,18 +402,31 @@ onUnmounted(() => {
   color: var(--muted);
   word-break: break-all;
   max-width: 640px;
+  letter-spacing: 0.01em;
 }
 .pill {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
   padding: 4px 10px;
   border-radius: 999px;
   font-size: 12px;
-  background: #fffaf0;
-  color: #c05621;
+  font-weight: 600;
+  line-height: 1.4;
+  border: 1px solid transparent;
+  background: #ffedd5;
+  color: #9a3412;
+  border-color: #fed7aa;
 }
 .pill.ok {
-  background: #ebf8ff;
-  color: var(--primary);
+  background: #dcfce7;
+  color: #166534;
+  border-color: #bbf7d0;
+}
+.pill.warn {
+  background: #ffedd5;
+  color: #9a3412;
+  border-color: #fed7aa;
 }
 .main {
   flex: 1;
