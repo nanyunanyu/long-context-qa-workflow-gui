@@ -430,9 +430,12 @@ def qw_json(workspace: Path, args: list[str]) -> dict[str, Any]:
         return json.loads(text[start : end + 1])
 
 
-def claim_one(workspace: Path, worker_id: str) -> dict[str, Any] | None:
+def claim_one(workspace: Path, worker_id: str, *, task_id: str | None = None) -> dict[str, Any] | None:
+    args = ["claim", "--worker-id", worker_id]
+    if task_id:
+        args += ["--task-id", task_id]
     try:
-        return qw_json(workspace, ["claim", "--worker-id", worker_id])
+        return qw_json(workspace, args)
     except RuntimeError as exc:
         if "no queued task" in str(exc):
             return None
@@ -538,6 +541,7 @@ def _stage_and_enqueue(
     provider: str,
     include_used: bool,
     packs: list[dict[str, str]] | None = None,
+    question_type: str = "short_answer",
 ) -> None:
     emit_event(workspace, step="stage", status="started", detail=f"limit={limit}")
     manifest_path = workspace / "queue" / "pending_packs.json"
@@ -657,6 +661,10 @@ def _stage_and_enqueue(
         ]
     if include_used:
         enq.append("--include-used")
+    qtype = str(question_type or "short_answer").strip().lower() or "short_answer"
+    if qtype not in {"short_answer", "multiple_choice", "auto"}:
+        qtype = "short_answer"
+    enq += ["--question-type", qtype]
     proc = popen_run(enq, workspace, timeout=600)
     if proc.returncode:
         raise RuntimeError(f"enqueue failed:\n{(proc.stderr or '')[-2000:]}\n{(proc.stdout or '')[-2000:]}")
@@ -673,6 +681,7 @@ def produce_batch(
     gen_retries: int = 3,
     source_type: str = "public documentation",
     retry_technical: bool = False,
+    task_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     system = workspace / "scripts" / "prompts" / "generate_qa.txt"
     fixture = fixture_root.resolve() if fixture_root else None
@@ -689,6 +698,16 @@ def produce_batch(
     claimed_count = 0
     results: list[dict[str, Any]] = []
     results_lock = threading.Lock()
+    pinned = [str(tid).strip() for tid in (task_ids or []) if str(tid).strip()] if task_ids is not None else None
+    pinned_lock = threading.Lock()
+
+    def next_pinned_id() -> str | None:
+        if pinned is None:
+            return None
+        with pinned_lock:
+            if not pinned:
+                return None
+            return pinned.pop(0)
 
     def worker(index: int) -> None:
         nonlocal claimed_count
@@ -699,11 +718,20 @@ def produce_batch(
                 if claimed_count >= limit:
                     return
                 claimed_count += 1
-            task = claim_one(workspace, f"desktop-{os.getpid()}-{index}")
+            specific_id = None
+            if pinned is not None:
+                specific_id = next_pinned_id()
+                if specific_id is None:
+                    with claimed_lock:
+                        claimed_count -= 1
+                    return
+            task = claim_one(workspace, f"desktop-{os.getpid()}-{index}", task_id=specific_id)
             if not task:
                 with claimed_lock:
                     claimed_count -= 1
-                return
+                if pinned is None:
+                    return
+                continue
             if should_pause(workspace):
                 release_task(workspace, task["id"], "paused before start")
                 with claimed_lock:
@@ -758,6 +786,8 @@ def run_pipeline(
     include_used: bool = False,
     gen_retries: int = 3,
     packs: list[dict[str, str]] | None = None,
+    question_type: str = "short_answer",
+    task_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     if packs:
         packs = [
@@ -768,6 +798,10 @@ def run_pipeline(
         if not packs:
             raise ValueError("已选择自选材料模式，但未提供有效 pack")
         limit = min(limit, len(packs))
+    pinned = [str(tid).strip() for tid in (task_ids or []) if str(tid).strip()]
+    if pinned:
+        skip_stage = True
+        limit = len(pinned)
     limit, workers = validate_batch_bounds(limit, workers)
     workspace = workspace.resolve()
     run_id = time.strftime("%Y%m%d-%H%M%S")
@@ -796,10 +830,14 @@ def run_pipeline(
                     provider=provider,
                     include_used=include_used,
                     packs=packs,
+                    question_type=question_type,
                 )
                 raise_if_paused(workspace)
-            queued = queued_task_count(workspace)
-            claim_limit = claim_limit_for_run(limit, queued)
+            if pinned:
+                claim_limit = len(pinned)
+            else:
+                queued = queued_task_count(workspace)
+                claim_limit = claim_limit_for_run(limit, queued)
             if claim_limit != limit:
                 update_state(workspace, limit=claim_limit)
             summary = produce_batch(
@@ -810,6 +848,7 @@ def run_pipeline(
                 fixture_root=fixture_root,
                 gen_retries=gen_retries,
                 retry_technical=retry_technical,
+                task_ids=pinned or None,
             )
         status = current_status_message(workspace, summary)
         mark_idle(workspace, status)
@@ -880,8 +919,15 @@ def run_review_pass(
     provider: str = "live",
     fixture_root: Path | None = None,
     source_type: str = "public technical/government documentation",
+    require_zero: bool = True,
+    zero_rechecked: bool = True,
 ) -> dict[str, Any]:
-    """Human-confirmed 0/8: run ablation → package --zero-rechecked-pass → queue passed."""
+    """Promote a pending-review candidate.
+
+    Default is human/auto-confirmed 0/8 (package --zero-rechecked-pass).
+    After false-negative rescore, call with require_zero=False and
+    zero_rechecked=False so the patched avg_accuracy is packaged as a normal pass.
+    """
     workspace = workspace.resolve()
     queue = read_queue(workspace)
     task = next((t for t in (queue.get("tasks") or []) if isinstance(t, dict) and t.get("id") == task_id), None)
@@ -913,8 +959,14 @@ def run_review_pass(
         avg = float(judge.get("avg_accuracy") if judge.get("avg_accuracy") is not None else cand.get("avg_accuracy"))
     except (TypeError, ValueError) as exc:
         raise ValueError("avg_accuracy unavailable") from exc
-    if avg != 0.0:
+    if require_zero and avg != 0.0:
         raise ValueError(f"review-pass requires avg_accuracy == 0.0 (got {avg})")
+    if not require_zero:
+        from workflow.qa_checks import gate_decision
+
+        mapped = gate_decision(avg)
+        if mapped != "ablation":
+            raise ValueError(f"rescored pass requires avg_accuracy in (0, 0.5], got {avg} ({mapped})")
 
     index = int(cand.get("candidate_index") or int(str(cand.get("candidate_id") or "candidate-01").rsplit("-", 1)[-1]))
     attempt = int(cand.get("attempt") or 1)
@@ -947,6 +999,10 @@ def run_review_pass(
                 timeout=5400,
             )
             final = batch_run.final_dir(task, index, "passed")
+            package_extra = ["--delivery-dir", str(final)]
+            if zero_rechecked:
+                package_extra.append("--zero-rechecked-pass")
+            package_extra.extend(["--source-type", source_type])
             produce_step(
                 workspace,
                 "package",
@@ -957,16 +1013,12 @@ def run_review_pass(
                 attempt=attempt,
                 provider=provider,
                 fixture_root=fixture_root,
-                extra=[
-                    "--delivery-dir",
-                    str(final),
-                    "--zero-rechecked-pass",
-                    "--source-type",
-                    source_type,
-                ],
+                extra=package_extra,
                 timeout=900,
             )
-            archive = batch_run.archive_run(candidate, task, candidate_id, attempt, "zero-rechecked-pass")
+            archive_label = "zero-rechecked-pass" if zero_rechecked else "passed"
+            reported_avg = 0.0 if zero_rechecked else float(avg)
+            archive = batch_run.archive_run(candidate, task, candidate_id, attempt, archive_label)
             _remove_holding_delivery(workspace, task, cand, index)
             row = batch_run.candidate_result(
                 task,
@@ -976,13 +1028,13 @@ def run_review_pass(
                 status="passed",
                 attempt=attempt,
                 provider=provider,
-                avg=0.0,
+                avg=reported_avg,
                 sample=str(final.relative_to(workspace)),
                 review="passed",
                 archive=str(archive),
             )
             row["failure_reason"] = None
-            row["zero_rechecked"] = True
+            row["zero_rechecked"] = zero_rechecked
             prior = batch_run.candidate_state(candidate)
             attempts = prior.get("attempts") if isinstance(prior.get("attempts"), list) else []
             batch_run.save_state(candidate, {**row, "attempts": attempts})
@@ -993,7 +1045,7 @@ def run_review_pass(
                 "candidates": [row],
                 "provider": provider,
                 "review_status": "passed",
-                "zero_rechecked": True,
+                "zero_rechecked": zero_rechecked,
             }
             summary_path = batch_run.resolved(task["sample_dir"]) / "work" / "candidate_results.json"
             batch_run.write_json(summary_path, summary)
@@ -1003,7 +1055,7 @@ def run_review_pass(
                 status="finished",
                 task_id=task["id"],
                 slug=task.get("slug"),
-                detail="zero_rechecked_pass",
+                detail="zero_rechecked_pass" if zero_rechecked else "rescored_pass",
             )
             completed = qw_json(
                 workspace,
@@ -1016,11 +1068,11 @@ def run_review_pass(
                     "--sample-dir",
                     task["sample_dir"],
                     "--avg-accuracy",
-                    "0",
+                    str(reported_avg),
                     "--candidate-results",
                     str(summary_path),
                     "--by",
-                    "desktop-review-pass",
+                    "desktop-review-pass" if zero_rechecked else "desktop-auto-review-rescore",
                 ],
             )
         mark_idle(workspace, f"review-pass ok → {final.name}")

@@ -115,6 +115,13 @@ def _pack_entry(root: Path, domain_key: str, name: str, pack_dir: Path, listed: 
             }
         )
         issues.extend(doc_issues)
+    doc_count = len(doc_rows)
+    if doc_count <= 0:
+        doc_kind = "unknown"
+    elif doc_count == 1:
+        doc_kind = "single"
+    else:
+        doc_kind = "multi"
     has_md = (pack_dir / "md").is_dir() and any((pack_dir / "md").iterdir()) if pack_dir.is_dir() else False
     if not docs and not has_md:
         issues.append("尚未放入文档")
@@ -143,6 +150,8 @@ def _pack_entry(root: Path, domain_key: str, name: str, pack_dir: Path, listed: 
         "coldness": pack_cat.get("coldness") or listed.get("coldness"),
         "theme": pack_cat.get("theme") or listed.get("theme"),
         "docs": doc_rows,
+        "doc_count": doc_count,
+        "doc_kind": doc_kind,
         "issues": list(dict.fromkeys(issues)),
         "hint": hint,
         "llm_audit": audit,

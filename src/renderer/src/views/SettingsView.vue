@@ -118,7 +118,7 @@ const placeholders: Record<string, string> = {
   material_audit: "留空则复用判分 Base URL",
 };
 const roleNotes: Record<string, string> = {
-  generation: "只出短答案题，禁止选择题。题干与金标语言跟材料走；短答可以是短语或 1–3 个短句；多槽须答案格式和 alias。默认推理强度「中」。",
+  generation: "默认短答案；看板可选选择题或自动。题干与金标语言跟材料走；短答可以是短语或 1–3 个短句；多槽须答案格式和 alias。选择题为四选一或 2–3 项多选。默认推理强度「中」。",
   evaluation: "默认「高」（开启 thinking，thinking_budget=16384）。关闭会关掉 thinking。",
   judge: "覆盖金标要点、无错误内容即可得分，不必字字对应。默认推理强度「中」。",
   review: "用于 0/8 自动复验。可单独配密钥，未填则复用判分密钥。",

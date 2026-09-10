@@ -30,6 +30,7 @@ from desktop.backend.queue_ops import (
     can_human_reject,
     can_requeue,
     can_review_pass,
+    can_start,
     find_pack_sibling,
     human_reject_many,
     human_reject_passed,
@@ -64,6 +65,7 @@ _lock = threading.Lock()
 _workspace: Path | None = None
 _run_thread: threading.Thread | None = None
 _audit_thread: threading.Thread | None = None
+_audit_stop = threading.Event()
 _last_run: dict[str, Any] | None = None
 _last_audit: dict[str, Any] | None = None
 
@@ -88,7 +90,9 @@ class RunBody(BaseModel):
     skip_stage: bool = False
     retry_technical: bool = False
     include_used: bool = False
+    question_type: str = Field(default="short_answer", pattern="^(short_answer|multiple_choice|auto)$")
     packs: list[PackSelector] | None = None
+    task_ids: list[str] | None = None
 
 
 class UiPrefsBody(BaseModel):
@@ -181,6 +185,7 @@ def _annotate_queue(queue: dict[str, Any]) -> dict[str, Any]:
         row["can_review_pass"] = review_pass
         row["can_auto_review"] = review_pass
         row["can_human_reject"] = human_reject
+        row["can_start"] = can_start(task)
         row["status_editable"] = requeue or cancel  # backward compatible
         row["ended_at"] = task_ended_at(task)
         if sibling:
@@ -208,6 +213,7 @@ def _snapshot() -> dict[str, Any]:
             "last_run": _last_run,
             "last_audit": _last_audit,
             "audit_busy": False,
+            "audit_stopping": False,
         }
     queue = _annotate_queue(read_queue(root))
     progress = read_progress(root)
@@ -221,6 +227,7 @@ def _snapshot() -> dict[str, Any]:
         "last_run": _last_run,
         "last_audit": _last_audit,
         "audit_busy": _audit_busy(),
+        "audit_stopping": _audit_stopping(),
     }
 
 
@@ -316,11 +323,15 @@ def api_materials_audit(body: MaterialsAuditBody) -> dict[str, Any]:
     if _audit_busy():
         raise HTTPException(409, "已有材料审核在运行")
     packs = [{"domain_key": p.domain_key, "pack": p.pack} for p in body.packs]
+    _audit_stop.clear()
 
     def target() -> None:
         global _last_audit
         try:
-            _last_audit = {"kind": "material_audit", **audit_packs(root, packs)}
+            _last_audit = {
+                "kind": "material_audit",
+                **audit_packs(root, packs, should_stop=_audit_stop.is_set),
+            }
         except Exception as exc:
             _last_audit = {"ok": False, "kind": "material_audit", "error": str(exc)}
 
@@ -328,6 +339,14 @@ def api_materials_audit(body: MaterialsAuditBody) -> dict[str, Any]:
         _audit_thread = threading.Thread(target=target, name="lcqa-material-audit", daemon=True)
         _audit_thread.start()
     return {"ok": True, "started": True, "count": len(packs), "snapshot": _snapshot()}
+
+
+@app.post("/api/materials/audit/stop")
+def api_materials_audit_stop() -> dict[str, Any]:
+    if not _audit_busy():
+        raise HTTPException(409, "当前没有材料审核在运行")
+    _audit_stop.set()
+    return {"ok": True, "stopping": True, "snapshot": _snapshot()}
 
 
 @app.get("/api/queue")
@@ -621,6 +640,10 @@ def _audit_busy() -> bool:
     return _audit_thread is not None and _audit_thread.is_alive()
 
 
+def _audit_stopping() -> bool:
+    return _audit_busy() and _audit_stop.is_set()
+
+
 @app.post("/api/run/start")
 def api_start(body: RunBody) -> dict[str, Any]:
     root = _require_workspace()
@@ -632,7 +655,8 @@ def api_start(body: RunBody) -> dict[str, Any]:
         raise HTTPException(400, "自选材料模式下请至少选择一个材料包")
     if _busy():
         raise HTTPException(409, "已有生产任务在运行")
-    return _spawn(root, body, skip_stage=body.skip_stage)
+    skip_stage = body.skip_stage or bool(body.task_ids)
+    return _spawn(root, body, skip_stage=skip_stage)
 
 
 @app.post("/api/run/resume")
@@ -670,7 +694,9 @@ def _spawn(root: Path, body: RunBody, *, skip_stage: bool) -> dict[str, Any]:
             skip_stage=skip_stage,
             retry_technical=body.retry_technical,
             include_used=body.include_used,
+            question_type=body.question_type,
             packs=packs,
+            task_ids=list(body.task_ids) if body.task_ids else None,
         )
 
     with _lock:
