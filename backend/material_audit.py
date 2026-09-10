@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .llm_client import chat_json, load_prompt
-from .materials import scan_materials
+from .materials import docs_for_production, doc_kind_for_count, scan_materials
 from .run_control import utcnow
 from .settings import get_settings_public
 
@@ -65,13 +65,11 @@ def find_pack_dir(workspace: Path, domain_key: str, pack: str) -> Path:
 
 
 def build_audit_user_message(workspace: Path, pack_dir: Path, catalog: dict[str, Any]) -> str:
-    docs = catalog.get("docs") if isinstance(catalog.get("docs"), list) else []
+    docs = docs_for_production(catalog)
     n = max(len(docs), 1)
     per = max(MAX_DOC_CHARS // n, 2000)
     excerpts: list[dict[str, Any]] = []
     for doc in docs:
-        if not isinstance(doc, dict):
-            continue
         md_path = _resolve_md(workspace, pack_dir, doc.get("file_md") or doc.get("markdown"))
         body = md_path.read_text(encoding="utf-8") if md_path else ""
         excerpts.append(
@@ -94,9 +92,12 @@ def build_audit_user_message(workspace: Path, pack_dir: Path, catalog: dict[str,
         "coldness": catalog.get("coldness"),
         "note": catalog.get("note"),
         "status": catalog.get("status"),
+        "doc_count": len(docs),
+        "doc_kind": doc_kind_for_count(len(docs)),
         "total_approx_tokens": catalog.get("total_approx_tokens"),
         "full_approx_tokens": catalog.get("full_approx_tokens"),
         "enough_for_16k": catalog.get("enough_for_16k"),
+        "single_doc_ok": True,
     }
     return (
         "PACK META (JSON):\n"
