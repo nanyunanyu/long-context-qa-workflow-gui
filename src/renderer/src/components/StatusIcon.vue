@@ -1,61 +1,22 @@
 <template>
   <span class="status" :class="tone" :title="tip">
-    <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
-      <!-- check -->
-      <path
-        v-if="kind === 'passed'"
-        d="M3.5 8.5 6.5 11.5 12.5 4.5"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.6"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-      <!-- x -->
-      <g v-else-if="kind === 'gate_failed' || kind === 'cancelled'">
-        <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-      </g>
-      <!-- search / review -->
-      <g v-else-if="kind === 'manual_review'">
-        <circle cx="7" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="1.5" />
-        <path d="M9.5 9.5 13 13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-      </g>
-      <!-- alert -->
-      <g v-else-if="kind === 'blocked'">
-        <path
-          d="M8 2.5 14 13.5H2Z"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linejoin="round"
-        />
-        <path d="M8 6.2v3.2M8 11.2h.01" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-      </g>
-      <!-- play -->
-      <path
-        v-else-if="kind === 'running'"
-        d="M5 3.5v9l8-4.5z"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="1.4"
-        stroke-linejoin="round"
-      />
-      <!-- pause -->
-      <g v-else-if="kind === 'paused'">
-        <path d="M5 3.5v9M11 3.5v9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-      </g>
-      <!-- clock / pending -->
-      <g v-else>
-        <circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.4" />
-        <path d="M8 5v3.2l2 1.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-      </g>
-    </svg>
+    <n-icon class="icon" size="16" :component="icon" />
     <span v-if="showLabel" class="text">{{ label }}</span>
   </span>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, type Component } from "vue";
+import { NIcon } from "naive-ui";
+import {
+  CheckmarkOutline,
+  CloseOutline,
+  PauseOutline,
+  PlayOutline,
+  SearchOutline,
+  TimeOutline,
+  WarningOutline,
+} from "@vicons/ionicons5";
 import type { TaskVisualState } from "../api";
 
 const props = withDefaults(
@@ -70,7 +31,25 @@ const props = withDefaults(
   { showLabel: true }
 );
 
-const kind = computed(() => props.state);
+const icon = computed<Component>(() => {
+  switch (props.state) {
+    case "passed":
+      return CheckmarkOutline;
+    case "gate_failed":
+    case "cancelled":
+      return CloseOutline;
+    case "manual_review":
+      return SearchOutline;
+    case "blocked":
+      return WarningOutline;
+    case "running":
+      return PlayOutline;
+    case "paused":
+      return PauseOutline;
+    default:
+      return TimeOutline;
+  }
+});
 
 const label = computed(() => {
   if (props.label != null && props.label !== "") return props.label;

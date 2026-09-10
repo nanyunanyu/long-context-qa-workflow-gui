@@ -11,49 +11,19 @@
         </div>
         <nav class="menu">
           <button type="button" :class="{ active: tab === 'workspace' }" @click="tab = 'workspace'">
-            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <path
-                d="M2.5 6.5 8 2.5l5.5 4v6.5a1 1 0 0 1-1 1h-3.5V9.5H7v4.5H3.5a1 1 0 0 1-1-1Z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.4"
-                stroke-linejoin="round"
-              />
-            </svg>
+            <n-icon class="nav-icon" size="16" :component="HomeOutline" />
             <span>工作区</span>
           </button>
           <button type="button" :class="{ active: tab === 'board' }" @click="tab = 'board'">
-            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="2.5" y="2.5" width="4.5" height="11" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" />
-              <rect x="9" y="2.5" width="4.5" height="7" rx="1" fill="none" stroke="currentColor" stroke-width="1.4" />
-            </svg>
+            <n-icon class="nav-icon" size="16" :component="GridOutline" />
             <span>生产看板</span>
           </button>
           <button type="button" :class="{ active: tab === 'materials' }" @click="tab = 'materials'">
-            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <path
-                d="M4 2.5h5.5L12.5 5.5v8a1 1 0 0 1-1 1h-7.5a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.4"
-                stroke-linejoin="round"
-              />
-              <path d="M9.5 2.5V5.5H12.5M5.5 8.5h5M5.5 11h3.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-            </svg>
+            <n-icon class="nav-icon" size="16" :component="DocumentTextOutline" />
             <span>材料</span>
           </button>
           <button type="button" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">
-            <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true">
-              <path
-                d="M6.66 3.34 6.99 1.23 9.01 1.23 9.34 3.34 10.35 3.76 12.07 2.49 13.51 3.93 12.24 5.65 12.66 6.66 14.77 6.99 14.77 9.01 12.66 9.34 12.24 10.35 13.51 12.07 12.07 13.51 10.35 12.24 9.34 12.66 9.01 14.77 6.99 14.77 6.66 12.66 5.65 12.24 3.93 13.51 2.49 12.07 3.76 10.35 3.34 9.34 1.23 9.01 1.23 6.99 3.34 6.66 3.76 5.65 2.49 3.93 3.93 2.49 5.65 3.76Z"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.35"
-                stroke-linejoin="miter"
-                stroke-miterlimit="3"
-              />
-              <circle cx="8" cy="8" r="2.15" fill="none" stroke="currentColor" stroke-width="1.35" />
-            </svg>
+            <n-icon class="nav-icon" size="16" :component="SettingsOutline" />
             <span>设置</span>
           </button>
         </nav>
@@ -111,7 +81,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { NConfigProvider } from "naive-ui";
+import { NConfigProvider, NIcon } from "naive-ui";
+import { DocumentTextOutline, GridOutline, HomeOutline, SettingsOutline } from "@vicons/ionicons5";
 import { apiGet, apiPost, apiPut } from "./api";
 import WorkspaceView from "./views/WorkspaceView.vue";
 import MaterialsView from "./views/MaterialsView.vue";

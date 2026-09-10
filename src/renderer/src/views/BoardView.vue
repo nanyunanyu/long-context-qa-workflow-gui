@@ -463,6 +463,8 @@
         <ul class="modal-checks">
           <li>金标可被原文支持：{{ boolLabel(autoReviewDialog.goldSupported) }}</li>
           <li>题干可判定：{{ boolLabel(autoReviewDialog.questionOk) }}</li>
+          <li v-if="autoReviewDialog.rescoredCount != null">假阴性改判正确数：{{ autoReviewDialog.rescoredCount }}</li>
+          <li v-if="autoReviewDialog.rescoredAvg != null">假阴性改判正确率：{{ autoReviewDialog.rescoredAvg }}</li>
           <li>模型：{{ autoReviewDialog.model || "—" }}</li>
           <li>时间：{{ autoReviewDialog.reviewedAt || "—" }}</li>
         </ul>
@@ -670,6 +672,8 @@ const autoReviewDialog = ref({
   reason: "",
   goldSupported: null as boolean | null,
   questionOk: null as boolean | null,
+  rescoredCount: null as number | null,
+  rescoredAvg: null as string | null,
   model: "",
   reviewedAt: "",
 });
@@ -1371,11 +1375,18 @@ function autoReviewPresentation(record: any) {
   if (action === "error") {
     return { label: "自动复验执行失败", tone: "abort", headline: "判定已出，但后续入库/打回失败" };
   }
-  if (verdict === "pass" || action === "promoted") {
-    return { label: "自动复验通过", tone: "pass", headline: "通过并入库（题/金标无误，0/8 视为模型答错）" };
+  if (action === "rejected" || verdict === "fail") {
+    const rescored = record?.rescored_avg_accuracy != null;
+    return {
+      label: "自动复验未通过",
+      tone: "fail",
+      headline: rescored
+        ? "假阴性改判后未过门禁，已打回 failed-samples"
+        : "不通过，已打回 failed-samples",
+    };
   }
-  if (verdict === "fail" || action === "rejected") {
-    return { label: "自动复验不通过", tone: "fail", headline: "不通过，已打回 failed-samples" };
+  if (verdict === "pass" || action === "promoted" || action === "rescored") {
+    return { label: "自动复验通过", tone: "pass", headline: "通过并入库（题/金标无误，0/8 视为模型答错）" };
   }
   return { label: "自动复验", tone: "abort", headline: "自动复验" };
 }
@@ -1395,6 +1406,14 @@ function autoReviewChip(task: any) {
 
 function fillAutoReviewDialog(record: any, slug: string) {
   const pres = autoReviewPresentation(record || {});
+  const rescoredAvg =
+    record?.rescored_avg_accuracy == null || record?.rescored_avg_accuracy === ""
+      ? null
+      : String(record.rescored_avg_accuracy);
+  const rescoredCount =
+    record?.rescored_correct_count == null || record?.rescored_correct_count === ""
+      ? null
+      : Number(record.rescored_correct_count);
   autoReviewDialog.value = {
     open: true,
     slug,
@@ -1403,6 +1422,8 @@ function fillAutoReviewDialog(record: any, slug: string) {
     reason: String(record?.reason || record?.exec_error || ""),
     goldSupported: record?.gold_supported ?? null,
     questionOk: record?.question_ok ?? null,
+    rescoredCount: Number.isFinite(rescoredCount) ? rescoredCount : null,
+    rescoredAvg,
     model: String(record?.model || ""),
     reviewedAt: String(record?.reviewed_at || ""),
   };
@@ -2077,7 +2098,7 @@ td {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   max-width: 100%;
 }
@@ -2085,12 +2106,12 @@ td {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: 0.02em;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
   white-space: nowrap;
 }
 .domain-tag.tone-teal {
@@ -2159,6 +2180,14 @@ td {
   letter-spacing: 0.02em;
   white-space: nowrap;
   border: 1px solid transparent;
+}
+.slug-tags .meta-chip,
+.pack-title .meta-chip {
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
 }
 .meta-chip.tone-progress {
   color: #1d4ed8;
@@ -2231,12 +2260,16 @@ td {
   margin-left: 22px;
 }
 .review-chip {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   border: 1px solid transparent;
   border-radius: 999px;
-  padding: 2px 8px;
+  padding: 0 6px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
   cursor: pointer;
   background: #edf2f7;
   color: var(--muted);

@@ -720,7 +720,7 @@ table.materials-table {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   max-width: 100%;
 }
@@ -728,12 +728,12 @@ table.materials-table {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: 0.02em;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
   white-space: nowrap;
 }
 .domain-tag.tone-teal {
@@ -825,6 +825,13 @@ button {
   letter-spacing: 0.02em;
   white-space: nowrap;
   border: 1px solid transparent;
+}
+.slug-tags .meta-chip {
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
 }
 .meta-chip.tone-READY,
 .meta-chip.tone-ok,
