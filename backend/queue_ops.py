@@ -173,6 +173,11 @@ def can_cancel(task: dict[str, Any]) -> bool:
     return is_non_accuracy_failure(task)
 
 
+def can_start(task: dict[str, Any]) -> bool:
+    """Queued tasks can be claimed and produced without staging new packs."""
+    return str(task.get("status") or "") == "queued"
+
+
 def can_human_reject(task: dict[str, Any]) -> bool:
     """Passed delivery eligible for post-QC revoke, or 0/8 pending-review reject."""
     status = str(task.get("status") or "")

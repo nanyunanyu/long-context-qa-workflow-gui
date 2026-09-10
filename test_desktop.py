@@ -652,16 +652,35 @@ class MaterialSelectTests(unittest.TestCase):
         data = scan_materials(root)
         self.assertGreater(data.get("pack_count", 0), 0)
         found = False
+        kinds = set()
+        named = {}
         for domain in data["domains"]:
             self.assertTrue(domain.get("domain_key"))
             for pack in domain.get("packs") or []:
                 self.assertEqual(pack.get("domain_key"), domain["domain_key"])
                 self.assertTrue(pack.get("slug"))
+                self.assertIn(pack.get("doc_kind"), {"single", "multi", "unknown"})
+                self.assertIsInstance(pack.get("doc_count"), int)
+                if pack["doc_kind"] == "single":
+                    self.assertEqual(pack["doc_count"], 1)
+                elif pack["doc_kind"] == "multi":
+                    self.assertGreaterEqual(pack["doc_count"], 2)
+                else:
+                    self.assertEqual(pack["doc_count"], 0)
+                kinds.add(pack["doc_kind"])
+                named[str(pack.get("path") or "")] = pack
                 found = True
-                break
-            if found:
-                break
         self.assertTrue(found)
+        self.assertIn("single", kinds)
+        self.assertIn("multi", kinds)
+        thinking = named.get("materials/detective/thinking-machine")
+        raffles = named.get("materials/detective/raffles")
+        if thinking:
+            self.assertEqual(thinking["doc_kind"], "single")
+            self.assertEqual(thinking["doc_count"], 1)
+        if raffles:
+            self.assertEqual(raffles["doc_kind"], "multi")
+            self.assertGreaterEqual(raffles["doc_count"], 2)
 
     def test_run_pipeline_rejects_empty_pack_list(self):
         with self.assertRaises(ValueError):
@@ -727,6 +746,8 @@ class MaterialSelectTests(unittest.TestCase):
                 self.assertNotIn("--include-used", stage_cmds[0])
                 self.assertTrue(enq_cmds)
                 self.assertNotIn("--include-used", enq_cmds[0])
+                self.assertIn("--question-type", enq_cmds[0])
+                self.assertEqual(enq_cmds[0][enq_cmds[0].index("--question-type") + 1], "short_answer")
 
                 captured.clear()
                 desktop_runner._stage_and_enqueue(
@@ -738,11 +759,54 @@ class MaterialSelectTests(unittest.TestCase):
                     provider="fixture",
                     include_used=True,
                     packs=[{"domain_key": "example", "pack": "demo"}],
+                    question_type="auto",
                 )
                 stage_cmds = [c for c in captured if "stage_from_materials.py" in " ".join(c)]
                 enq_cmds = [c for c in captured if "enqueue-bulk" in c]
                 self.assertIn("--include-used", stage_cmds[0])
                 self.assertIn("--include-used", enq_cmds[0])
+                self.assertEqual(enq_cmds[0][enq_cmds[0].index("--question-type") + 1], "auto")
+
+    def test_run_body_accepts_board_question_type(self) -> None:
+        from pydantic import ValidationError
+
+        from desktop.backend.server import RunBody
+
+        body = RunBody(limit=1, workers=1, question_type="multiple_choice")
+        self.assertEqual(body.question_type, "multiple_choice")
+        auto = RunBody(question_type="auto")
+        self.assertEqual(auto.question_type, "auto")
+        default = RunBody()
+        self.assertEqual(default.question_type, "short_answer")
+        with self.assertRaises(ValidationError):
+            RunBody(question_type="essay")
+        pinned = RunBody(task_ids=["t-1", "t-2"], limit=2)
+        self.assertEqual(pinned.task_ids, ["t-1", "t-2"])
+
+    def test_claim_one_passes_task_id(self) -> None:
+        from pathlib import Path
+
+        with patch.object(desktop_runner, "qw_json", return_value={"id": "t-queued", "status": "claimed"}) as mocked:
+            task = desktop_runner.claim_one(Path("/tmp"), "w-1", task_id="t-queued")
+        self.assertEqual(task["id"], "t-queued")
+        args = mocked.call_args[0][1]
+        self.assertEqual(args[0], "claim")
+        self.assertEqual(args[args.index("--task-id") + 1], "t-queued")
+
+    def test_annotate_queue_marks_queued_can_start(self) -> None:
+        from desktop.backend.server import _annotate_queue
+
+        queue = _annotate_queue(
+            {
+                "tasks": [
+                    {"id": "t-q", "slug": "demo", "status": "queued"},
+                    {"id": "t-p", "slug": "done", "status": "passed"},
+                ]
+            }
+        )
+        by_id = {t["id"]: t for t in queue["tasks"]}
+        self.assertTrue(by_id["t-q"]["can_start"])
+        self.assertFalse(by_id["t-p"]["can_start"])
 
 
 class UiPrefsAndQueueOpsTests(unittest.TestCase):
@@ -760,6 +824,7 @@ class UiPrefsAndQueueOpsTests(unittest.TestCase):
                             "selected_statuses": ["queued", "running"],
                             "date_from": "2026-09-07",
                             "date_to": "2026-09-08",
+                            "question_type": "auto",
                         },
                         "materials": {"selected_domains": ["academic"], "selected_statuses": ["READY"]},
                     }
@@ -768,6 +833,7 @@ class UiPrefsAndQueueOpsTests(unittest.TestCase):
                 self.assertEqual(prefs["board"]["selected_statuses"], ["queued", "running"])
                 self.assertEqual(prefs["board"]["date_from"], "2026-09-07")
                 self.assertEqual(prefs["board"]["date_to"], "2026-09-08")
+                self.assertEqual(prefs["board"]["question_type"], "auto")
                 again = ui_prefs.get_ui_prefs()
                 self.assertEqual(again["materials"]["selected_domains"], ["academic"])
                 self.assertEqual(again["board"]["date_from"], "2026-09-07")
@@ -922,6 +988,14 @@ class BoardOpsTests(unittest.TestCase):
         self.assertFalse(can_requeue({"status": "gate_failed", "avg_accuracy": 0.75}))
         self.assertFalse(can_cancel({"status": "gate_failed", "avg_accuracy": 1.0}))
         self.assertFalse(can_requeue({"status": "passed", "avg_accuracy": 0.375}))
+
+    def test_can_start_queued_only(self):
+        from desktop.backend.queue_ops import can_start
+
+        self.assertTrue(can_start({"status": "queued"}))
+        self.assertFalse(can_start({"status": "claimed"}))
+        self.assertFalse(can_start({"status": "passed"}))
+        self.assertFalse(can_start({"status": "cancelled"}))
 
     def test_can_requeue_blocked_by_pack_sibling(self):
         from desktop.backend.queue_ops import can_requeue, find_pack_sibling
@@ -1522,55 +1596,136 @@ class AutoReviewTests(unittest.TestCase):
             self.assertEqual(task["auto_review"]["verdict"], "pass")
             self.assertEqual(task["status"], "blocked")
 
+    def test_auto_review_false_negatives_in_band_rescores(self) -> None:
+        from desktop.backend import auto_review as auto_review_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_pending_review_task(root)
+            with patch.object(auto_review_mod, "load_keys"), patch.object(
+                auto_review_mod,
+                "chat_json",
+                return_value={
+                    "verdict": "pass",
+                    "gold_supported": True,
+                    "question_ok": True,
+                    "false_negative_rollouts": ["rollout_01", "rollout_02"],
+                    "rescored_correct_count": 2,
+                    "reason": "两条同义表述被原 Judge 误判",
+                },
+            ), patch.object(auto_review_mod, "run_review_pass", return_value={"ok": True, "task_id": "t-zero"}) as mocked:
+                result = auto_review_mod.run_auto_review(root, "t-zero")
+            mocked.assert_called_once()
+            kwargs = mocked.call_args.kwargs
+            self.assertFalse(kwargs.get("require_zero"))
+            self.assertFalse(kwargs.get("zero_rechecked"))
+            self.assertEqual(result["auto_review"]["action"], "rescored")
+            self.assertEqual(result["auto_review"]["rescored_correct_count"], 2)
+            self.assertEqual(result["auto_review"]["rescored_avg_accuracy"], 0.25)
+            judge = json.loads(
+                (root / "work" / "samples" / "042-demo" / "work" / "candidates" / "candidate-01" / "work" / "raw" / "judge_summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(judge["avg_accuracy"], 0.25)
+            self.assertEqual(judge["correct_count"], 2)
+
+    def test_auto_review_false_negatives_too_easy_rejects(self) -> None:
+        from desktop.backend import auto_review as auto_review_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            held = _write_pending_review_task(root)
+            with patch.object(auto_review_mod, "load_keys"), patch.object(
+                auto_review_mod,
+                "chat_json",
+                return_value={
+                    "verdict": "pass",
+                    "gold_supported": True,
+                    "question_ok": True,
+                    "false_negative_rollouts": [f"rollout_0{i}" for i in range(1, 6)],
+                    "rescored_correct_count": 5,
+                    "reason": "五条实质已答对",
+                },
+            ), patch.object(auto_review_mod, "run_review_pass") as promote:
+                result = auto_review_mod.run_auto_review(root, "t-zero")
+            promote.assert_not_called()
+            self.assertEqual(result["auto_review"]["action"], "rejected")
+            self.assertFalse(held.exists())
+            task = json.loads((root / "queue" / "queue.json").read_text(encoding="utf-8"))["tasks"][0]
+            self.assertEqual(task["status"], "gate_failed")
+
+    def test_normalize_rollout_ids_and_rescore(self) -> None:
+        from desktop.backend.auto_review import apply_false_negative_rescore, normalize_rollout_ids
+
+        self.assertEqual(normalize_rollout_ids(["rollout_01", "2", 8, "rollout_01", 0, 9]), [1, 2, 8])
+        patched = apply_false_negative_rescore({"avg_accuracy": 0.0, "correct_count": 0}, [1, 2])
+        self.assertEqual(patched["correct_count"], 2)
+        self.assertEqual(patched["avg_accuracy"], 0.25)
+        self.assertTrue(patched["scores"][0]["rescored_from_false_negative"])
+
 
 class MaterialAuditTests(unittest.TestCase):
+    def _write_pack(self, root: Path, pack_name: str) -> Path:
+        pack = root / "materials" / "example" / pack_name
+        pack.mkdir(parents=True)
+        md = pack / "md" / "doc.md"
+        md.parent.mkdir(parents=True)
+        md.write_text("# Niche protocol\n\nCross-document exception clause lives here.\n", encoding="utf-8")
+        catalog_path = pack / "CATALOG.json"
+        catalog_path.write_text(
+            json.dumps(
+                {
+                    "pack": pack_name,
+                    "domain": "example",
+                    "domain_key": "example",
+                    "status": "READY",
+                    "coldness": "cold",
+                    "theme": "niche protocol exceptions",
+                    "docs": [
+                        {
+                            "doc_id": "DOC1",
+                            "title": "Niche protocol",
+                            "file_md": f"materials/example/{pack_name}/md/doc.md",
+                            "approx_tokens": 20000,
+                            "license_note": "public domain",
+                        }
+                    ],
+                    "total_approx_tokens": 20000,
+                    "enough_for_16k": True,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return catalog_path
+
+    def _write_domain(self, root: Path, packs: list[str]) -> None:
+        domain = root / "materials" / "example"
+        domain.mkdir(parents=True, exist_ok=True)
+        (domain / "CATALOG.json").write_text(
+            json.dumps(
+                {
+                    "domain": "example",
+                    "domain_key": "example",
+                    "packs": [{"pack": name, "path": str(root / "materials" / "example" / name)} for name in packs],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
     def test_audit_writes_llm_audit_without_changing_status(self) -> None:
         from desktop.backend import material_audit as audit_mod
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            pack = root / "materials" / "example" / "demo-pack"
-            pack.mkdir(parents=True)
-            md = pack / "md" / "doc.md"
-            md.parent.mkdir(parents=True)
-            md.write_text("# Niche protocol\n\nCross-document exception clause lives here.\n", encoding="utf-8")
-            catalog_path = pack / "CATALOG.json"
-            catalog_path.write_text(
-                json.dumps(
-                    {
-                        "pack": "demo-pack",
-                        "domain": "example",
-                        "domain_key": "example",
-                        "status": "READY",
-                        "coldness": "cold",
-                        "theme": "niche protocol exceptions",
-                        "docs": [
-                            {
-                                "doc_id": "DOC1",
-                                "title": "Niche protocol",
-                                "file_md": "materials/example/demo-pack/md/doc.md",
-                                "approx_tokens": 20000,
-                                "license_note": "public domain",
-                            }
-                        ],
-                        "total_approx_tokens": 20000,
-                        "enough_for_16k": True,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            (pack.parent / "CATALOG.json").write_text(
-                json.dumps(
-                    {"domain": "example", "domain_key": "example", "packs": [{"pack": "demo-pack", "path": str(pack)}]},
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            catalog_path = self._write_pack(root, "demo-pack")
+            self._write_domain(root, ["demo-pack"])
             with patch.object(
                 audit_mod,
                 "chat_json",
@@ -1593,6 +1748,57 @@ class MaterialAuditTests(unittest.TestCase):
             self.assertEqual(saved["llm_audit"]["status"], "pass")
             self.assertEqual(saved["llm_audit"]["summary"], "冷源且足够长")
             self.assertEqual(saved["theme"], "niche protocol exceptions")
+
+    def test_audit_packs_stops_remaining(self) -> None:
+        from desktop.backend import material_audit as audit_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = self._write_pack(root, "pack-a")
+            second = self._write_pack(root, "pack-b")
+            self._write_domain(root, ["pack-a", "pack-b"])
+            seen = {"count": 0}
+
+            def fake_chat_json(*_args, **_kwargs):
+                seen["count"] += 1
+                return {
+                    "status": "pass",
+                    "summary": f"pack {seen['count']}",
+                    "checks": {
+                        "license_ok": True,
+                        "enough_length": True,
+                        "long_context_potential": True,
+                        "cold_enough": True,
+                    },
+                    "notes": "ok",
+                }
+
+            def should_stop() -> bool:
+                return seen["count"] >= 1
+
+            with patch.object(audit_mod, "chat_json", side_effect=fake_chat_json):
+                result = audit_mod.audit_packs(
+                    root,
+                    [
+                        {"domain_key": "example", "pack": "pack-a"},
+                        {"domain_key": "example", "pack": "pack-b"},
+                    ],
+                    should_stop=should_stop,
+                )
+
+            self.assertTrue(result["stopped"])
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["skipped"], 1)
+            self.assertFalse(result["ok"])
+            self.assertEqual(len(result["results"]), 2)
+            self.assertTrue(result["results"][0]["ok"])
+            self.assertTrue(result["results"][1]["stopped"])
+            self.assertEqual(result["results"][1]["pack"], "pack-b")
+            self.assertEqual(seen["count"], 1)
+            saved_first = json.loads(first.read_text(encoding="utf-8"))
+            saved_second = json.loads(second.read_text(encoding="utf-8"))
+            self.assertEqual(saved_first["llm_audit"]["status"], "pass")
+            self.assertNotIn("llm_audit", saved_second)
 
 
 if __name__ == "__main__":

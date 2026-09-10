@@ -22,6 +22,14 @@
         并发
         <input v-model.number="workers" type="number" min="1" max="10" />
       </label>
+      <label>
+        出题类型
+        <select v-model="questionType" :disabled="running">
+          <option value="short_answer">短答案</option>
+          <option value="multiple_choice">选择题</option>
+          <option value="auto">自动</option>
+        </select>
+      </label>
       <label class="check">
         <input v-model="preferCold" type="checkbox" :disabled="materialMode === 'select'" />
         优先冷源
@@ -42,9 +50,7 @@
         <span class="run-status-dot" aria-hidden="true" />
         <span class="run-status-text">运行状态 · {{ runStatusLabel }}</span>
       </span>
-      <p class="muted rule-hint">
-        出题语言与材料一致（英文材料用英语题/金标，中文材料用中文）。只出短答案题，禁止选择题。短答可以是短语或 1–3 个短句；多槽须答案格式和 alias。判分覆盖金标要点且无错误内容即可，不必字字对应。
-      </p>
+      <p class="muted rule-hint">{{ questionTypeHint }}</p>
     </section>
 
     <section class="card">
@@ -130,7 +136,19 @@
                   />
                 </td>
                 <td>
-                  <strong>{{ pack.pack }}</strong>
+                  <div class="pack-title">
+                    <strong>{{ pack.pack }}</strong>
+                    <template v-for="kind in [docKindPresentation(pack.doc_count, pack.doc_kind)]" :key="pack.key + '-dk'">
+                      <span v-if="kind.show" class="meta-chip" :class="'tone-' + kind.tone" :title="kind.title">
+                        {{ kind.label }}
+                      </span>
+                    </template>
+                    <template v-for="au in [packAuditChip(pack)]" :key="pack.key + '-au'">
+                      <span v-if="au" class="meta-chip" :class="'tone-' + au.tone" :title="au.title">
+                        {{ au.label }}
+                      </span>
+                    </template>
+                  </div>
                   <div class="muted">{{ pack.domain_key }} · {{ pack.path }}</div>
                 </td>
                 <td>
@@ -229,56 +247,23 @@
           </button>
           <button type="button" :disabled="!selectedTaskIds.length" @click="clearTaskSelection">清空选择</button>
           <span v-if="selectedTaskIds.length" class="hint">已选 {{ selectedTaskIds.length }}</span>
-          <div class="batch-actions">
+          <n-dropdown
+            trigger="click"
+            placement="bottom-end"
+            :options="batchActionOptions"
+            :disabled="batchMenuDisabled"
+            @select="onBatchActionSelect"
+          >
             <button
               type="button"
-              class="batch-btn batch-requeue"
-              :disabled="running || batchBusy || !selectedRequeueIds.length"
-              @click="batchChangeStatus('queued')"
+              class="batch-menu-btn"
+              :disabled="batchMenuDisabled"
+              title="对已选任务执行批量操作"
             >
-              批量改回排队
-              <span v-if="selectedRequeueIds.length" class="batch-count">{{ selectedRequeueIds.length }}</span>
+              批量操作
+              <span class="action-caret" aria-hidden="true">▾</span>
             </button>
-            <button
-              type="button"
-              class="batch-btn batch-cancel"
-              :disabled="running || batchBusy || !selectedCancelIds.length"
-              @click="batchChangeStatus('cancelled')"
-            >
-              批量取消
-              <span v-if="selectedCancelIds.length" class="batch-count">{{ selectedCancelIds.length }}</span>
-            </button>
-            <button
-              type="button"
-              class="batch-btn batch-review-pass"
-              :disabled="running || batchBusy || !selectedReviewPassIds.length"
-              title="对已选 blocked + 复验 0/8 任务逐条补跑消融并入库"
-              @click="batchReviewPass"
-            >
-              批量复检通过
-              <span v-if="selectedReviewPassIds.length" class="batch-count">{{ selectedReviewPassIds.length }}</span>
-            </button>
-            <button
-              type="button"
-              class="batch-btn batch-auto-review"
-              :disabled="running || batchBusy || !reviewReady || !selectedReviewPassIds.length"
-              :title="reviewReady ? '对已选 复验 0/8 任务调用大模型自动判定并执行通过/打回' : '请先在设置中配置复验模型或判分密钥'"
-              @click="batchAutoReview"
-            >
-              批量自动复验
-              <span v-if="selectedReviewPassIds.length" class="batch-count">{{ selectedReviewPassIds.length }}</span>
-            </button>
-            <button
-              type="button"
-              class="batch-btn batch-review-reject"
-              :disabled="running || batchBusy || !selectedHumanRejectIds.length"
-              title="对已选通过/待复验任务批量打回"
-              @click="openBatchHumanReject"
-            >
-              批量复检不通过
-              <span v-if="selectedHumanRejectIds.length" class="batch-count">{{ selectedHumanRejectIds.length }}</span>
-            </button>
-          </div>
+          </n-dropdown>
         </div>
       </div>
       <table class="board-table">
@@ -307,7 +292,7 @@
               <input
                 type="checkbox"
                 :checked="selectedTaskSet.has(task.id)"
-                :disabled="running || !(task.can_requeue || task.can_cancel || task.can_review_pass || task.can_human_reject)"
+                :disabled="running || !taskSelectable(task)"
                 @change="toggleTaskSelect(task)"
               />
             </td>
@@ -316,13 +301,20 @@
             </td>
             <td class="col-material">
               <div v-for="parts in [taskSlugParts(task)]" :key="task.id + '-slug'" class="slug-cell">
-                <span
-                  class="domain-tag"
-                  :class="'tone-' + domainTagTone(parts.domainKey)"
-                  :title="parts.domainKey"
-                >
-                  {{ parts.domainLabel }}
-                </span>
+                <div class="slug-tags">
+                  <span
+                    class="domain-tag"
+                    :class="'tone-' + domainTagTone(parts.domainKey)"
+                    :title="parts.domainKey"
+                  >
+                    {{ parts.domainLabel }}
+                  </span>
+                  <template v-for="kind in [taskDocKindPresentation(task)]" :key="task.id + '-dk'">
+                    <span v-if="kind.show" class="meta-chip" :class="'tone-' + kind.tone" :title="kind.title">
+                      {{ kind.label }}
+                    </span>
+                  </template>
+                </div>
                 <span class="pack-name" :title="task.slug">{{ parts.pack }}</span>
               </div>
               <div v-if="task.duplicate_of" class="warn-hint">
@@ -488,6 +480,8 @@ import {
   apiPut,
   compareBoardTasks,
   domainTagTone,
+  docKindPresentation,
+  docKindSearchText,
   formatEndedAt,
   isActiveQueueStatus,
   matchesMaterialQuery,
@@ -532,10 +526,47 @@ function boardDateFromPrefs(prefs: any, key: "date_from" | "date_to"): string {
 
 const limit = ref(10);
 const workers = ref(1);
+const questionType = ref<"short_answer" | "multiple_choice" | "auto">(
+  ["short_answer", "multiple_choice", "auto"].includes(String(props.initialPrefs?.board?.question_type || ""))
+    ? (props.initialPrefs.board.question_type as "short_answer" | "multiple_choice" | "auto")
+    : "short_answer"
+);
 const preferCold = ref(true);
 const retryTechnical = ref(false);
 const materialMode = ref<"auto" | "select">("auto");
 const domains = ref<any[]>([]);
+const packDocByPath = computed(() => {
+  const map = new Map<string, { doc_count: number; doc_kind: string }>();
+  for (const domain of domains.value) {
+    for (const pack of domain.packs || []) {
+      const path = String(pack.path || "").replace(/\/+$/, "");
+      if (!path) continue;
+      map.set(path, {
+        doc_count: Number(pack.doc_count) || 0,
+        doc_kind: String(pack.doc_kind || "unknown"),
+      });
+    }
+  }
+  return map;
+});
+
+function lookupPackDoc(path: unknown) {
+  const key = String(path || "").replace(/\/+$/, "");
+  return key ? packDocByPath.value.get(key) : undefined;
+}
+
+function taskDocKindPresentation(task: any) {
+  const found = lookupPackDoc(task?.materials_pack);
+  if (!found) return docKindPresentation(0, "unknown");
+  return docKindPresentation(found.doc_count, found.doc_kind);
+}
+
+function taskDocKindSearchText(task: any) {
+  const found = lookupPackDoc(task?.materials_pack);
+  if (!found) return "";
+  return docKindSearchText(found.doc_count, found.doc_kind);
+}
+
 const domainFilter = ref("");
 const packSearch = ref("");
 const taskSearch = ref("");
@@ -638,6 +669,9 @@ type FlatPack = {
   hint: string;
   ready: boolean;
   slug: string;
+  doc_count: number;
+  doc_kind: string;
+  llm_audit: any;
 };
 
 const tasks = computed(() => props.snapshot?.queue?.tasks || []);
@@ -660,7 +694,7 @@ const filteredTasks = computed(() => {
         if (to && day > to) return false;
       }
     }
-    if (!taskMatchesMaterialQuery(t, q)) return false;
+    if (!taskMatchesMaterialQuery(t, q, taskDocKindSearchText(t))) return false;
     return true;
   });
   return [...rows].sort(compareBoardTasks);
@@ -670,11 +704,21 @@ function clearDateFilter() {
   dateFrom.value = "";
   dateTo.value = "";
 }
-const selectableFiltered = computed(() =>
-  filteredTasks.value.filter(
-    (t: any) => t.can_requeue || t.can_cancel || t.can_review_pass || t.can_human_reject
-  )
-);
+
+function taskCanStart(task: any): boolean {
+  return Boolean(task?.can_start) || String(task?.status || "") === "queued";
+}
+
+function taskSelectable(task: any): boolean {
+  return Boolean(
+    taskCanStart(task) ||
+      task?.can_requeue ||
+      task?.can_cancel ||
+      task?.can_review_pass ||
+      task?.can_human_reject
+  );
+}
+const selectableFiltered = computed(() => filteredTasks.value.filter((t: any) => taskSelectable(t)));
 const selectedTaskSet = computed(() => new Set(selectedTaskIds.value));
 const selectedRequeueIds = computed(() =>
   selectedTaskIds.value.filter((id) => {
@@ -700,6 +744,12 @@ const selectedHumanRejectIds = computed(() =>
     return t?.can_human_reject;
   })
 );
+const selectedStartIds = computed(() =>
+  selectedTaskIds.value.filter((id) => {
+    const t = tasks.value.find((x: any) => x.id === id);
+    return taskCanStart(t);
+  })
+);
 const allFilteredSelected = computed(
   () =>
     selectableFiltered.value.length > 0 &&
@@ -708,6 +758,18 @@ const allFilteredSelected = computed(
 const runStatus = computed(() => props.snapshot?.run?.status || "idle");
 const running = computed(() => ["running", "stopping"].includes(runStatus.value));
 const reviewReady = computed(() => Boolean(props.snapshot?.keys?.review_ready ?? props.snapshot?.keys?.review));
+const batchMenuDisabled = computed(
+  () =>
+    running.value ||
+    batchBusy.value ||
+    !(
+      selectedStartIds.value.length ||
+      selectedRequeueIds.value.length ||
+      selectedCancelIds.value.length ||
+      selectedReviewPassIds.value.length ||
+      selectedHumanRejectIds.value.length
+    )
+);
 
 const RUN_STATUS_UI: Record<string, { label: string; tone: string }> = {
   idle: { label: "空闲", tone: "idle" },
@@ -730,6 +792,17 @@ const runStatusTitle = computed(() => {
   if (run.message) bits.push(String(run.message));
   return bits.join(" · ");
 });
+const questionTypeHint = computed(() => {
+  const shared =
+    "出题语言与材料一致（英文材料用英语题/金标，中文材料用中文）。判分覆盖金标要点且无错误内容即可，不必字字对应。本批选项只作用于新入队任务。";
+  if (questionType.value === "multiple_choice") {
+    return `${shared} 本批出选择题：单选四选一，或多选（2–3 个正确项，答案如 A,C）。干扰项须是近形，禁止以上都不是/全选。`;
+  }
+  if (questionType.value === "auto") {
+    return `${shared} 本批由出题模型按材料选择短答、单选或多选。`;
+  }
+  return `${shared} 本批只出短答案题；短答可以是短语或 1–3 个短句；多槽须答案格式和 alias。`;
+});
 const selectedSet = computed(() => new Set(selectedKeys.value));
 
 const flatPacks = computed<FlatPack[]>(() => {
@@ -748,6 +821,9 @@ const flatPacks = computed<FlatPack[]>(() => {
         hint: String(pack.hint || ""),
         ready: Boolean(pack.ready),
         slug: String(pack.slug || `${domain_key}-${name}`),
+        doc_count: Number(pack.doc_count) || 0,
+        doc_kind: String(pack.doc_kind || "unknown"),
+        llm_audit: pack.llm_audit || null,
       });
     }
   }
@@ -758,7 +834,7 @@ const visiblePacks = computed(() =>
   flatPacks.value.filter((p) => {
     if (domainFilter.value && p.domain_key !== domainFilter.value) return false;
     if (!showUsed.value && !p.ready) return false;
-    if (!matchesMaterialQuery(packSearch.value, p.pack, p.domain_key, p.path, p.slug, p.status, p.hint)) {
+    if (!matchesMaterialQuery(packSearch.value, p.pack, p.domain_key, p.path, p.slug, p.status, p.hint, docKindSearchText(p.doc_count, p.doc_kind))) {
       return false;
     }
     return true;
@@ -830,12 +906,108 @@ function clearStatuses() {
 
 const DANGER_ACTION_STYLE = "color: #c53030";
 
+function withBatchCount(label: string, count: number): string {
+  return count ? `${label}（${count}）` : label;
+}
+
+const batchActionOptions = computed<DropdownOption[]>(() => [
+  {
+    label: withBatchCount("批量开始", selectedStartIds.value.length),
+    key: "start",
+    disabled: running.value || batchBusy.value || !selectedStartIds.value.length,
+    props: {
+      title: "领取已选排队任务并开始生产，不再挑选新材料",
+    },
+  },
+  {
+    label: withBatchCount("批量改回排队", selectedRequeueIds.value.length),
+    key: "requeue",
+    disabled: running.value || batchBusy.value || !selectedRequeueIds.value.length,
+  },
+  {
+    label: withBatchCount("批量取消", selectedCancelIds.value.length),
+    key: "cancel",
+    disabled: running.value || batchBusy.value || !selectedCancelIds.value.length,
+    props: { style: DANGER_ACTION_STYLE },
+  },
+  {
+    label: withBatchCount("批量复检通过", selectedReviewPassIds.value.length),
+    key: "review_pass",
+    disabled: running.value || batchBusy.value || !selectedReviewPassIds.value.length,
+    props: {
+      title: "对已选 blocked + 复验 0/8 任务逐条补跑消融并入库",
+    },
+  },
+  {
+    label: withBatchCount("批量自动复验", selectedReviewPassIds.value.length),
+    key: "auto_review",
+    disabled: running.value || batchBusy.value || !reviewReady.value || !selectedReviewPassIds.value.length,
+    props: {
+      title: reviewReady.value
+        ? "对已选 复验 0/8 任务调用大模型自动判定并执行通过/打回"
+        : "请先在设置中配置复验模型或判分密钥",
+    },
+  },
+  {
+    label: withBatchCount("批量复检不通过", selectedHumanRejectIds.value.length),
+    key: "human_reject",
+    disabled: running.value || batchBusy.value || !selectedHumanRejectIds.value.length,
+    props: {
+      style: DANGER_ACTION_STYLE,
+      title: "对已选通过/待复验任务批量打回",
+    },
+  },
+]);
+
+function onBatchActionSelect(key: string | number) {
+  const action = String(key);
+  if (action === "start") {
+    void startQueuedTasks(selectedStartIds.value);
+    return;
+  }
+  if (action === "requeue") {
+    void batchChangeStatus("queued");
+    return;
+  }
+  if (action === "cancel") {
+    void batchChangeStatus("cancelled");
+    return;
+  }
+  if (action === "review_pass") {
+    void batchReviewPass();
+    return;
+  }
+  if (action === "auto_review") {
+    void batchAutoReview();
+    return;
+  }
+  if (action === "human_reject") {
+    openBatchHumanReject();
+  }
+}
+
 function taskHasActions(task: any): boolean {
-  return Boolean(task?.can_human_reject || task?.can_review_pass || task?.can_requeue || task?.can_cancel);
+  return Boolean(
+    taskCanStart(task) ||
+      task?.can_human_reject ||
+      task?.can_review_pass ||
+      task?.can_requeue ||
+      task?.can_cancel
+  );
 }
 
 function taskActionOptions(task: any): DropdownOption[] {
   const opts: DropdownOption[] = [];
+  if (taskCanStart(task)) {
+    opts.push({
+      label: "开始生产",
+      key: "start",
+      disabled: running.value || batchBusy.value,
+      props: {
+        title: "领取这条排队任务并开始生产，不再挑选新材料",
+      },
+    });
+  }
   if (task.can_human_reject) {
     opts.push({
       label: "复检不通过？",
@@ -880,6 +1052,10 @@ function taskActionOptions(task: any): DropdownOption[] {
 
 function onTaskActionSelect(key: string | number, task: any) {
   const action = String(key);
+  if (action === "start") {
+    void startQueuedTasks([task.id]);
+    return;
+  }
   if (action === "human_reject") {
     void humanReject(task);
     return;
@@ -1035,7 +1211,7 @@ function persistMaterialsCollapsed() {
 }
 
 function toggleTaskSelect(task: any) {
-  if (!(task.can_requeue || task.can_cancel || task.can_review_pass || task.can_human_reject)) return;
+  if (!taskSelectable(task)) return;
   const set = new Set(selectedTaskIds.value);
   if (set.has(task.id)) set.delete(task.id);
   else set.add(task.id);
@@ -1258,6 +1434,19 @@ watch(
   }
 );
 
+function packAuditChip(pack: FlatPack): { label: string; tone: string; title: string } | null {
+  const status = String(pack?.llm_audit?.status || "").trim().toLowerCase();
+  if (status !== "pass" && status !== "fail" && status !== "warn") return null;
+  const summary = String(pack?.llm_audit?.summary || "").trim();
+  const label = status === "pass" ? "通过" : status === "warn" ? "警告" : "不通过";
+  const tone = status === "pass" ? "pass" : status === "warn" ? "warn" : "fail";
+  return {
+    label,
+    tone,
+    title: summary ? `${label}：${summary}` : label,
+  };
+}
+
 function isSelected(key: string) {
   return selectedSet.value.has(key);
 }
@@ -1294,6 +1483,7 @@ async function body(opts: { forStart?: boolean } = {}) {
     workers: Math.min(10, Math.max(1, Number(workers.value) || 1)),
     prefer_cold: preferCold.value,
     retry_technical: retryTechnical.value,
+    question_type: questionType.value,
   };
   if (opts.forStart && materialMode.value === "select") {
     const packs = effectiveSelectedPacks.value;
@@ -1324,6 +1514,25 @@ async function resume() {
   await apiPost("/api/run/resume", await body());
   emit("refresh");
 }
+
+async function startQueuedTasks(ids: string[]) {
+  const taskIds = [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!taskIds.length) return;
+  if (running.value) {
+    alert("已有生产任务在运行");
+    return;
+  }
+  try {
+    const payload = await body();
+    payload.task_ids = taskIds;
+    payload.limit = taskIds.length;
+    await apiPost("/api/run/resume", payload);
+    selectedTaskIds.value = selectedTaskIds.value.filter((id) => !taskIds.includes(id));
+    emit("refresh");
+  } catch (err: any) {
+    alert(err?.message || String(err));
+  }
+}
 async function stop() {
   await apiPost("/api/run/stop");
   emit("refresh");
@@ -1340,6 +1549,7 @@ function persistBoardFilters(immediate = false) {
       selected_statuses: [...selectedStatuses.value],
       date_from: dateFrom.value || null,
       date_to: dateTo.value || null,
+      question_type: questionType.value,
     },
   };
   const run = () => {
@@ -1364,6 +1574,10 @@ onMounted(async () => {
     if (saved) selectedStatuses.value = saved;
     dateFrom.value = boardDateFromPrefs(prefs, "date_from");
     dateTo.value = boardDateFromPrefs(prefs, "date_to");
+    const savedType = String(prefs?.board?.question_type || "");
+    if (savedType === "short_answer" || savedType === "multiple_choice" || savedType === "auto") {
+      questionType.value = savedType;
+    }
     if (typeof prefs?.board?.materials_collapsed === "boolean") {
       materialsCollapsed.value = prefs.board.materials_collapsed;
     }
@@ -1376,7 +1590,7 @@ onMounted(async () => {
 });
 
 watch(selectedStatuses, () => persistBoardFilters(false), { deep: true });
-watch([dateFrom, dateTo], () => persistBoardFilters(false));
+watch([dateFrom, dateTo, questionType], () => persistBoardFilters(false));
 onDeactivated(() => persistBoardFilters(true));
 onUnmounted(() => persistBoardFilters(true));
 </script>
@@ -1480,6 +1694,10 @@ onUnmounted(() => persistBoardFilters(true));
   display: flex;
   flex-wrap: wrap;
   gap: 10px 14px;
+  align-items: center;
+}
+.status-actions :deep(.n-dropdown-trigger) {
+  display: inline-flex;
   align-items: center;
 }
 .date-filter-group {
@@ -1629,6 +1847,11 @@ button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
+.batch-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
 .hint,
 .muted {
   color: var(--muted);
@@ -1654,6 +1877,19 @@ h2 {
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+.pack-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+}
+.pack-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 table {
   width: 100%;
   border-collapse: collapse;
@@ -1671,20 +1907,20 @@ table {
   width: 36px;
 }
 .board-table .col-status {
-  width: 100px;
+  width: 86px;
 }
 .board-table .col-material {
-  width: 148px;
+  width: 248px;
 }
 .board-table .col-queue {
-  width: 88px;
+  width: 72px;
 }
 .board-table .col-stage {
-  width: 188px;
+  width: 156px;
   overflow: visible;
 }
 .board-table .col-pass {
-  width: 168px;
+  width: 140px;
 }
 .pass-stack {
   display: flex;
@@ -1695,11 +1931,11 @@ table {
   max-width: 100%;
 }
 .board-table .col-ended {
-  width: 128px;
+  width: 124px;
   white-space: nowrap;
 }
 .board-table .col-actions {
-  width: 88px;
+  width: 76px;
   white-space: nowrap;
 }
 .board-table .col-status :deep(.status),
@@ -1730,6 +1966,14 @@ td {
   flex-wrap: nowrap;
   align-items: flex-start;
   gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.slug-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
   min-width: 0;
   max-width: 100%;
 }
@@ -1800,6 +2044,48 @@ td {
   -webkit-line-clamp: 2;
   line-clamp: 2;
 }
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.meta-chip.tone-progress {
+  color: #1d4ed8;
+  background: #dbeafe;
+  border-color: #bfdbfe;
+}
+.meta-chip.tone-neutral {
+  color: #334155;
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+}
+.meta-chip.tone-pass {
+  color: #166534;
+  background: #dcfce7;
+  border-color: #bbf7d0;
+}
+.meta-chip.tone-fail {
+  color: #9f1239;
+  background: #ffe4e6;
+  border-color: #fecdd3;
+}
+.meta-chip.tone-warn {
+  color: #9a3412;
+  background: #ffedd5;
+  border-color: #fed7aa;
+}
+.pack-list .meta-chip {
+  margin-left: 0;
+  flex: 0 0 auto;
+  vertical-align: middle;
+}
 .ok {
   color: #2f855a;
 }
@@ -1836,81 +2122,6 @@ td {
 .action-caret {
   font-size: 10px;
   opacity: 0.7;
-}
-.batch-actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-.batch-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.2;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
-}
-.batch-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.batch-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 1.25rem;
-  height: 1.25rem;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  background: rgba(255, 255, 255, 0.72);
-}
-.batch-requeue {
-  color: #1d4ed8;
-  background: #dbeafe;
-  border-color: #bfdbfe;
-}
-.batch-requeue:not(:disabled):hover {
-  background: #bfdbfe;
-}
-.batch-cancel {
-  color: #9a3412;
-  background: #ffedd5;
-  border-color: #fed7aa;
-}
-.batch-cancel:not(:disabled):hover {
-  background: #fed7aa;
-}
-.batch-review-pass {
-  color: #166534;
-  background: #dcfce7;
-  border-color: #bbf7d0;
-}
-.batch-review-pass:not(:disabled):hover {
-  background: #bbf7d0;
-}
-.batch-review-reject {
-  color: #9f1239;
-  background: #ffe4e6;
-  border-color: #fecdd3;
-}
-.batch-review-reject:not(:disabled):hover {
-  background: #fecdd3;
-}
-.batch-auto-review {
-  color: #1e40af;
-  background: #e0e7ff;
-  border-color: #c7d2fe;
-}
-.batch-auto-review:not(:disabled):hover {
-  background: #c7d2fe;
 }
 .pass-stack .review-chip {
   margin-left: 22px;

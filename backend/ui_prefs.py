@@ -16,6 +16,7 @@ DEFAULT_UI: dict[str, Any] = {
         "materials_collapsed": False,
         "date_from": None,
         "date_to": None,
+        "question_type": "short_answer",
     },
     "materials": {
         "selected_domains": None,
@@ -61,6 +62,13 @@ def push_recent(path: Path | str) -> list[str]:
     return data["recents"]
 
 
+def _norm_question_type(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"short_answer", "multiple_choice", "auto"}:
+        return text
+    return "short_answer"
+
+
 def _norm_board_day(value: Any) -> str | None:
     if value is None:
         return None
@@ -86,6 +94,7 @@ def get_ui_prefs() -> dict[str, Any]:
             "materials_collapsed": bool(board.get("materials_collapsed", False)),
             "date_from": _norm_board_day(board.get("date_from")),
             "date_to": _norm_board_day(board.get("date_to")),
+            "question_type": _norm_question_type(board.get("question_type")),
         },
         "materials": {
             "selected_domains": materials.get("selected_domains"),
@@ -120,6 +129,8 @@ def save_ui_prefs(patch: dict[str, Any]) -> dict[str, Any]:
             board_patch["date_from"] = _norm_board_day(board_patch.get("date_from"))
         if "date_to" in board_patch:
             board_patch["date_to"] = _norm_board_day(board_patch.get("date_to"))
+        if "question_type" in board_patch:
+            board_patch["question_type"] = _norm_question_type(board_patch.get("question_type"))
         merged["board"] = {**merged["board"], **board_patch}
     if isinstance(patch.get("materials"), dict):
         merged["materials"] = {**merged["materials"], **patch["materials"]}

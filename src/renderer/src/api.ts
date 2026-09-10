@@ -176,6 +176,51 @@ export function domainTagTone(domainKey: string): DomainTagTone {
   return DOMAIN_TAG_TONES[h % DOMAIN_TAG_TONES.length];
 }
 
+export type DocKind = "single" | "multi" | "unknown" | string;
+
+export type DocKindPresentation = {
+  show: boolean;
+  kind: DocKind;
+  count: number;
+  label: string;
+  title: string;
+  tone: "neutral" | "progress";
+};
+
+export function docKindPresentation(
+  count: unknown,
+  kind?: unknown
+): DocKindPresentation {
+  const n = Number(count);
+  let resolved: DocKind = String(kind || "").trim().toLowerCase();
+  if (resolved !== "single" && resolved !== "multi" && resolved !== "unknown") {
+    if (!Number.isFinite(n) || n <= 0) resolved = "unknown";
+    else if (n === 1) resolved = "single";
+    else resolved = "multi";
+  }
+  if (resolved === "single") {
+    return { show: true, kind: "single", count: 1, label: "单文档", title: "1 篇文档", tone: "neutral" };
+  }
+  if (resolved === "multi") {
+    const docs = Number.isFinite(n) && n >= 2 ? n : 2;
+    return {
+      show: true,
+      kind: "multi",
+      count: docs,
+      label: `多文档·${docs}`,
+      title: `${docs} 篇文档`,
+      tone: "progress",
+    };
+  }
+  return { show: false, kind: "unknown", count: Number.isFinite(n) ? n : 0, label: "", title: "", tone: "neutral" };
+}
+
+export function docKindSearchText(count: unknown, kind?: unknown): string {
+  const p = docKindPresentation(count, kind);
+  if (!p.show) return "";
+  return `${p.label} ${p.title} ${p.kind}`;
+}
+
 /** Case-insensitive multi-token AND match against material-related text fields. */
 export function matchesMaterialQuery(
   query: string,
@@ -189,7 +234,11 @@ export function matchesMaterialQuery(
   return q.split(/\s+/).filter(Boolean).every((token) => hay.includes(token));
 }
 
-export function taskMatchesMaterialQuery(task: any, query: string): boolean {
+export function taskMatchesMaterialQuery(
+  task: any,
+  query: string,
+  ...extra: Array<string | null | undefined>
+): boolean {
   const parts = taskSlugParts(task);
   return matchesMaterialQuery(
     query,
@@ -199,7 +248,8 @@ export function taskMatchesMaterialQuery(task: any, query: string): boolean {
     task?.domain,
     parts.domainKey,
     parts.domainLabel,
-    parts.pack
+    parts.pack,
+    ...extra
   );
 }
 

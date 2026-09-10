@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -163,9 +164,28 @@ def audit_pack(workspace: Path, domain_key: str, pack: str) -> dict[str, Any]:
     }
 
 
-def audit_packs(workspace: Path, packs: list[dict[str, str]]) -> dict[str, Any]:
+def _stopped_row(item: dict[str, str]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "stopped": True,
+        "domain_key": str(item.get("domain_key") or "").strip(),
+        "pack": str(item.get("pack") or "").strip(),
+        "error": "stopped",
+    }
+
+
+def audit_packs(
+    workspace: Path,
+    packs: list[dict[str, str]],
+    should_stop: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
-    for item in packs:
+    stopped = False
+    for index, item in enumerate(packs):
+        if should_stop and should_stop():
+            stopped = True
+            results.extend(_stopped_row(rest) for rest in packs[index:])
+            break
         domain_key = str(item.get("domain_key") or "").strip()
         pack = str(item.get("pack") or "").strip()
         if not domain_key or not pack:
@@ -175,8 +195,11 @@ def audit_packs(workspace: Path, packs: list[dict[str, str]]) -> dict[str, Any]:
             results.append(audit_pack(workspace, domain_key, pack))
         except Exception as exc:  # noqa: BLE001 — collect per-pack errors
             results.append({"ok": False, "domain_key": domain_key, "pack": pack, "error": str(exc)})
+    skipped = sum(1 for r in results if r.get("stopped"))
     return {
-        "ok": all(bool(r.get("ok")) for r in results) if results else False,
+        "ok": (not stopped) and all(bool(r.get("ok")) for r in results) if results else False,
         "results": results,
         "count": sum(1 for r in results if r.get("ok")),
+        "skipped": skipped,
+        "stopped": stopped,
     }
