@@ -136,12 +136,6 @@ def _pack_entry(root: Path, domain_key: str, name: str, pack_dir: Path, listed: 
         hint = "已用于门禁失败样例"
     elif str(status).upper() == "IN_PROGRESS":
         hint = "生产中"
-    if audit and audit.get("status"):
-        summary = str(audit.get("summary") or "").strip()
-        extra = f"审核 {audit.get('status')}"
-        if summary:
-            extra += f"：{summary[:48]}"
-        hint = f"{hint} · {extra}" if hint else extra
     return {
         "pack": pack_cat.get("pack") or listed.get("pack") or name,
         "domain_key": domain_key,
