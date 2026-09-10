@@ -39,9 +39,21 @@
             <p v-if="workspace" class="path">{{ workspace }}</p>
             <p v-else class="path">尚未选择工作根目录</p>
           </div>
-          <span class="pill" :class="keysReady ? 'ok' : 'warn'">
-            密钥 {{ keysReady ? "已就绪" : keys.file_exists ? "不完整" : "未配置" }}
-          </span>
+          <div class="top-pills">
+            <span class="pill" :class="keysReady ? 'ok' : 'warn'">
+              密钥 {{ keysReady ? "已就绪" : keys.file_exists ? "不完整" : "未配置" }}
+            </span>
+            <span
+              v-if="workspace"
+              class="run-status"
+              :class="'tone-' + runStatusTone"
+              :title="runStatusTitle"
+            >
+              <span class="run-status-dot" aria-hidden="true" />
+              <span>{{ runStatusLabel }}</span>
+              <span v-if="runStatusClaimed != null" class="run-status-claimed">已领 {{ runStatusClaimed }}</span>
+            </span>
+          </div>
         </header>
 
         <main class="main">
@@ -116,6 +128,34 @@ let ws: WebSocket | null = null;
 let tabSaveTimer: number | undefined;
 
 const keysReady = computed(() => !!keys.value.ready);
+
+const RUN_STATUS_UI: Record<string, { label: string; tone: string }> = {
+  idle: { label: "空闲", tone: "idle" },
+  running: { label: "运行中", tone: "running" },
+  stopping: { label: "停止中", tone: "stopping" },
+  interrupted: { label: "已中断", tone: "interrupted" },
+};
+
+const runStatus = computed(() => snapshot.value?.run?.status || "idle");
+const runStatusLabel = computed(
+  () => RUN_STATUS_UI[runStatus.value]?.label || String(runStatus.value)
+);
+const runStatusTone = computed(
+  () => RUN_STATUS_UI[runStatus.value]?.tone || "idle"
+);
+const runStatusClaimed = computed(() => {
+  if (!["running", "stopping"].includes(runStatus.value)) return null;
+  const claimed = snapshot.value?.run?.claimed;
+  return claimed == null ? null : claimed;
+});
+const runStatusTitle = computed(() => {
+  const run = snapshot.value?.run || {};
+  const bits = [`状态码：${runStatus.value}`];
+  if (run.run_id) bits.push(`run_id：${run.run_id}`);
+  if (run.claimed != null) bits.push(`已领取：${run.claimed}`);
+  if (run.message) bits.push(String(run.message));
+  return bits.join(" · ");
+});
 
 async function loadRecents() {
   const data = await apiGet("/api/recents");
@@ -375,16 +415,28 @@ onUnmounted(() => {
   max-width: 640px;
   letter-spacing: 0.01em;
 }
-.pill {
+.top-pills {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.pill,
+.run-status {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
-  padding: 4px 10px;
+  padding: 0 6px;
   border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
   border: 1px solid transparent;
+  white-space: nowrap;
+}
+.pill {
   background: #ffedd5;
   color: #9a3412;
   border-color: #fed7aa;
@@ -398,6 +450,82 @@ onUnmounted(() => {
   background: #ffedd5;
   color: #9a3412;
   border-color: #fed7aa;
+}
+.run-status {
+  gap: 5px;
+  overflow: visible;
+  background: #f1f5f9;
+  color: #475569;
+  border-color: #e2e8f0;
+}
+.run-status-dot {
+  position: relative;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.run-status-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  pointer-events: none;
+  opacity: 0;
+}
+.run-status-claimed {
+  color: inherit;
+  opacity: 0.72;
+  font-weight: 500;
+}
+.run-status.tone-idle {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #475569;
+}
+.run-status.tone-running {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}
+.run-status.tone-running .run-status-dot {
+  animation: run-status-core 1.4s ease-in-out infinite;
+}
+.run-status.tone-running .run-status-dot::after {
+  animation: run-status-ring 1.5s ease-out infinite;
+}
+.run-status.tone-stopping {
+  background: #fffbeb;
+  border-color: #fde68a;
+  color: #b45309;
+}
+.run-status.tone-interrupted {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #be123c;
+}
+@keyframes run-status-core {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.85);
+    opacity: 0.72;
+  }
+}
+@keyframes run-status-ring {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(2.8);
+    opacity: 0;
+  }
 }
 .main {
   flex: 1;

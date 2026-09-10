@@ -531,6 +531,29 @@ def run_one_controlled(
         return result
 
 
+def _selected_stage_error(domain_key: str, pack_name: str, proc: subprocess.CompletedProcess) -> str:
+    prefix = f"{domain_key}/{pack_name}"
+    try:
+        payload = json.loads(proc.stdout or "")
+    except (json.JSONDecodeError, TypeError):
+        payload = None
+    if isinstance(payload, dict):
+        bits: list[str] = []
+        for row in payload.get("errors") or []:
+            if isinstance(row, dict):
+                bits.append(str(row.get("error") or row.get("reason") or row))
+            elif row:
+                bits.append(str(row))
+        if bits:
+            return f"{prefix}: " + "; ".join(bits)
+        if payload.get("staged") == 0:
+            return f"{prefix}: staged 0 packs"
+    tail = (proc.stderr or proc.stdout or "").strip()[-800:]
+    if tail:
+        return f"{prefix}: {tail}"
+    return f"{prefix}: staged 0 packs"
+
+
 def _stage_and_enqueue(
     workspace: Path,
     *,
@@ -575,18 +598,29 @@ def _stage_and_enqueue(
             if include_used:
                 stage_cmd.insert(-2, "--include-used")
             proc = popen_run(stage_cmd, workspace, timeout=3600)
-            if proc.returncode:
-                errors.append(f"{domain_key}/{pack_name}: {(proc.stderr or proc.stdout or '')[-800:]}")
-                continue
-            if manifest_path.is_file():
+            added = 0
+            if manifest_path.is_file() and not proc.returncode:
                 try:
                     data = json.loads(manifest_path.read_text(encoding="utf-8"))
                     for row in data.get("packs") or []:
                         if isinstance(row, dict) and row.get("slug"):
                             if not any(m.get("slug") == row["slug"] for m in merged):
                                 merged.append(row)
+                                added += 1
                 except (OSError, json.JSONDecodeError) as exc:
                     errors.append(f"{domain_key}/{pack_name} manifest: {exc}")
+                    emit_event(
+                        workspace,
+                        step="stage",
+                        status="error",
+                        detail=f"{domain_key}/{pack_name} manifest: {exc}",
+                    )
+                    continue
+            if proc.returncode or added == 0:
+                detail = _selected_stage_error(domain_key, pack_name, proc)
+                errors.append(detail)
+                emit_event(workspace, step="stage", status="error", detail=detail)
+                continue
         if not merged:
             detail = "; ".join(errors) if errors else "no packs staged"
             raise RuntimeError(f"selected materials staging failed: {detail}")
