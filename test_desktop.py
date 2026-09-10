@@ -1891,6 +1891,44 @@ class MaterialAuditTests(unittest.TestCase):
             self.assertEqual(saved_first["llm_audit"]["status"], "pass")
             self.assertNotIn("llm_audit", saved_second)
 
+    def test_audit_packs_on_pack_progress(self) -> None:
+        from desktop.backend import material_audit as audit_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_pack(root, "pack-a")
+            self._write_pack(root, "pack-b")
+            self._write_domain(root, ["pack-a", "pack-b"])
+            seen: list[tuple[str, int]] = []
+
+            def fake_chat_json(*_args, **_kwargs):
+                return {
+                    "status": "pass",
+                    "summary": "ok",
+                    "checks": {
+                        "license_ok": True,
+                        "enough_length": True,
+                        "long_context_potential": True,
+                        "cold_enough": True,
+                    },
+                    "notes": "",
+                }
+
+            def on_pack(item: dict, index: int) -> None:
+                seen.append((str(item["pack"]), index))
+
+            with patch.object(audit_mod, "chat_json", side_effect=fake_chat_json):
+                audit_mod.audit_packs(
+                    root,
+                    [
+                        {"domain_key": "example", "pack": "pack-a"},
+                        {"domain_key": "example", "pack": "pack-b"},
+                    ],
+                    on_pack=on_pack,
+                )
+
+            self.assertEqual(seen, [("pack-a", 0), ("pack-b", 1)])
+
 
 if __name__ == "__main__":
     unittest.main()

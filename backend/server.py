@@ -68,6 +68,8 @@ _audit_thread: threading.Thread | None = None
 _audit_stop = threading.Event()
 _last_run: dict[str, Any] | None = None
 _last_audit: dict[str, Any] | None = None
+_audit_current: dict[str, str] | None = None
+_audit_pending: list[dict[str, str]] = []
 
 
 class OpenBody(BaseModel):
@@ -214,6 +216,8 @@ def _snapshot() -> dict[str, Any]:
             "last_audit": _last_audit,
             "audit_busy": False,
             "audit_stopping": False,
+            "audit_current": None,
+            "audit_pending": [],
         }
     queue = _annotate_queue(read_queue(root))
     progress = read_progress(root)
@@ -228,6 +232,8 @@ def _snapshot() -> dict[str, Any]:
         "last_audit": _last_audit,
         "audit_busy": _audit_busy(),
         "audit_stopping": _audit_stopping(),
+        "audit_current": dict(_audit_current) if _audit_current else None,
+        "audit_pending": [dict(item) for item in _audit_pending],
     }
 
 
@@ -316,6 +322,16 @@ def api_materials() -> dict[str, Any]:
     return scan_materials(_require_workspace())
 
 
+def _set_audit_progress(current: dict[str, str] | None, pending: list[dict[str, str]]) -> None:
+    global _audit_current, _audit_pending
+    _audit_current = dict(current) if current else None
+    _audit_pending = [dict(item) for item in pending]
+
+
+def _clear_audit_progress() -> None:
+    _set_audit_progress(None, [])
+
+
 @app.post("/api/materials/audit")
 def api_materials_audit(body: MaterialsAuditBody) -> dict[str, Any]:
     global _audit_thread, _last_audit
@@ -324,16 +340,22 @@ def api_materials_audit(body: MaterialsAuditBody) -> dict[str, Any]:
         raise HTTPException(409, "已有材料审核在运行")
     packs = [{"domain_key": p.domain_key, "pack": p.pack} for p in body.packs]
     _audit_stop.clear()
+    _set_audit_progress(None, packs)
+
+    def on_pack(item: dict[str, str], index: int) -> None:
+        _set_audit_progress(item, packs[index:])
 
     def target() -> None:
         global _last_audit
         try:
             _last_audit = {
                 "kind": "material_audit",
-                **audit_packs(root, packs, should_stop=_audit_stop.is_set),
+                **audit_packs(root, packs, should_stop=_audit_stop.is_set, on_pack=on_pack),
             }
         except Exception as exc:
             _last_audit = {"ok": False, "kind": "material_audit", "error": str(exc)}
+        finally:
+            _clear_audit_progress()
 
     with _lock:
         _audit_thread = threading.Thread(target=target, name="lcqa-material-audit", daemon=True)
