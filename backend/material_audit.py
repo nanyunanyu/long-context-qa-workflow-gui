@@ -179,6 +179,7 @@ def audit_packs(
     workspace: Path,
     packs: list[dict[str, str]],
     should_stop: Callable[[], bool] | None = None,
+    on_pack: Callable[[dict[str, str], int], None] | None = None,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     stopped = False
@@ -187,6 +188,8 @@ def audit_packs(
             stopped = True
             results.extend(_stopped_row(rest) for rest in packs[index:])
             break
+        if on_pack:
+            on_pack(item, index)
         domain_key = str(item.get("domain_key") or "").strip()
         pack = str(item.get("pack") or "").strip()
         if not domain_key or not pack:

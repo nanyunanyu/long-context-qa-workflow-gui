@@ -2164,9 +2164,6 @@ td {
   font-size: 10px;
   opacity: 0.7;
 }
-.pass-stack .review-chip {
-  margin-left: 22px;
-}
 .review-chip {
   display: inline-flex;
   align-items: center;

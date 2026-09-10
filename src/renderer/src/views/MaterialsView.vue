@@ -23,6 +23,7 @@
       <button type="button" :disabled="!auditBusy" @click="stopAudit">
         {{ auditStopping ? "停止中…" : "停止审核" }}
       </button>
+      <span v-if="auditMessage" class="hint" :class="{ err: auditError }">{{ auditMessage }}</span>
       <span v-if="selectedPackPaths.length" class="hint">
         已选 {{ selectedPackPaths.length }}
         <template v-if="hiddenSelectedCount">（另有 {{ hiddenSelectedCount }} 个被当前筛选隐藏）</template>
@@ -157,13 +158,13 @@
               </template>
             </td>
             <td class="cell-chip">
-              <template v-for="au in [auditPresentation(pack.llm_audit)]" :key="pack.path + '-au'">
+              <template v-for="au in [auditPresentation(pack.llm_audit, isPackAuditing(pack, domain))]" :key="pack.path + '-au'">
                 <button
                   type="button"
                   class="review-chip"
                   :class="'tone-' + au.tone"
                   :title="au.title"
-                  @click="openAuditDialog(pack)"
+                  @click="openAuditDialog(pack, isPackAuditing(pack, domain))"
                 >
                   {{ au.label }}
                 </button>
@@ -181,10 +182,11 @@
               <button
                 type="button"
                 class="audit-action-btn"
-                :disabled="auditBusy"
-                @click="auditOne(pack, domain.domain_key)"
+                :class="{ busy: isPackAuditing(pack, domain) }"
+                :disabled="auditBusy && !isPackAuditing(pack, domain)"
+                @click.stop="auditOne(pack, domain.domain_key)"
               >
-                审核
+                {{ isPackAuditing(pack, domain) ? "审核中" : "审核" }}
               </button>
             </td>
           </tr>
@@ -280,6 +282,8 @@ const filterOpen = ref(false);
 const packSearch = ref("");
 const auditBusy = ref(false);
 const auditStopping = ref(false);
+const auditingPackKeys = ref<string[]>([]);
+let auditEpoch = 0;
 const selectedPackPaths = ref<string[]>([]);
 const auditMessage = ref("");
 const auditError = ref(false);
@@ -405,7 +409,18 @@ function packPath(pack: any): string {
   return String(pack?.path || `${pack?.domain_key || ""}::${pack?.pack || ""}`);
 }
 
+function packAuditKey(domainKey: string, pack: string): string {
+  return `${domainKey}::${pack}`;
+}
+
 const selectedPackSet = computed(() => new Set(selectedPackPaths.value));
+const auditingPackSet = computed(() => new Set(auditingPackKeys.value));
+
+function isPackAuditing(pack: any, domain: any): boolean {
+  const domainKey = String(pack?.domain_key || domain?.domain_key || "");
+  const name = String(pack?.pack || "");
+  return Boolean(domainKey && name && auditingPackSet.value.has(packAuditKey(domainKey, name)));
+}
 
 const visiblePackPathSet = computed(() => {
   const paths = new Set<string>();
@@ -550,15 +565,22 @@ function auditLabel(status: string) {
   if (status === "pass") return "通过";
   if (status === "warn") return "警告";
   if (status === "fail") return "不通过";
+  if (status === "running") return "审核中";
   return status || "未审核";
 }
 
-function auditPresentation(audit: any): {
+function auditPresentation(
+  audit: any,
+  auditing = false
+): {
   tone: string;
   label: string;
   summary: string;
   title: string;
 } {
+  if (auditing) {
+    return { tone: "running", label: "审核中", summary: "", title: "正在进行 LLM 选材审核" };
+  }
   const status = String(audit?.status || "").trim().toLowerCase();
   if (!status) {
     return { tone: "pending", label: "未审核", summary: "", title: "尚未进行 LLM 选材审核" };
@@ -626,21 +648,26 @@ function auditHeadline(status: string) {
   if (status === "pass") return "审核通过";
   if (status === "warn") return "审核警告";
   if (status === "fail") return "审核不通过";
+  if (status === "running") return "正在审核";
   return "尚未进行 LLM 选材审核";
 }
 
-function openAuditDialog(pack: any) {
+function openAuditDialog(pack: any, auditing = false) {
   const audit = pack?.llm_audit;
-  const status = String(audit?.status || "").trim().toLowerCase();
-  const pres = auditPresentation(audit);
+  const status = auditing ? "running" : String(audit?.status || "").trim().toLowerCase();
+  const pres = auditPresentation(audit, auditing);
   const checks = audit?.checks && typeof audit.checks === "object" ? audit.checks : {};
-  const hasAudit = Boolean(status);
+  const hasAudit = Boolean(status) && !auditing;
   auditDialog.value = {
     open: true,
     pack: String(pack?.pack || ""),
     tone: pres.tone,
     headline: auditHeadline(status),
-    summary: hasAudit ? String(audit?.summary || "").trim() : "尚未进行 LLM 选材审核",
+    summary: auditing
+      ? "该材料包正在进行 LLM 选材审核，完成后会写回结果。"
+      : hasAudit
+        ? String(audit?.summary || "").trim()
+        : "尚未进行 LLM 选材审核",
     notes: hasAudit ? String(audit?.notes || "").trim() : "",
     licenseOk: hasAudit ? Boolean(checks.license_ok) : null,
     enoughLength: hasAudit ? Boolean(checks.enough_length) : null,
@@ -655,6 +682,27 @@ function closeAuditDialog() {
   auditDialog.value.open = false;
 }
 
+function applyAuditProgress(state: any) {
+  if (!state?.audit_busy) {
+    auditingPackKeys.value = [];
+    return;
+  }
+  const pending = Array.isArray(state.audit_pending) ? state.audit_pending : [];
+  if (pending.length) {
+    auditingPackKeys.value = pending.map((item: any) =>
+      packAuditKey(String(item?.domain_key || ""), String(item?.pack || ""))
+    );
+  }
+}
+
+async function reloadMaterialsQuietly() {
+  try {
+    await load();
+  } catch {
+    /* keep waiting for the in-flight audit */
+  }
+}
+
 async function waitAuditDone() {
   await new Promise((resolve) => window.setTimeout(resolve, 400));
   for (let i = 0; i < 180; i++) {
@@ -662,25 +710,47 @@ async function waitAuditDone() {
     if (state?.audit_stopping) {
       auditStopping.value = true;
     }
+    applyAuditProgress(state);
     if (!state?.audit_busy) {
-      await load();
+      auditingPackKeys.value = [];
+      await reloadMaterialsQuietly();
       return state?.last_audit;
     }
+    if (i % 3 === 0) await reloadMaterialsQuietly();
     await new Promise((resolve) => window.setTimeout(resolve, 800));
   }
-  await load();
+  auditingPackKeys.value = [];
+  await reloadMaterialsQuietly();
   return null;
 }
 
 async function startAudit(packs: Array<{ domain_key: string; pack: string }>) {
   if (!packs.length) return;
+  if (auditBusy.value) {
+    const already = packs.every((p) =>
+      auditingPackSet.value.has(packAuditKey(p.domain_key, p.pack))
+    );
+    if (!already) {
+      auditError.value = true;
+      auditMessage.value = "已有材料审核在运行，请等待结束或点「停止审核」。";
+    }
+    return;
+  }
+  const epoch = ++auditEpoch;
   auditBusy.value = true;
   auditStopping.value = false;
   auditError.value = false;
+  auditingPackKeys.value = packs.map((p) => packAuditKey(p.domain_key, p.pack));
   auditMessage.value = `正在审核 ${packs.length} 个材料包…`;
   try {
     await apiPost("/api/materials/audit", { packs });
     const result = await waitAuditDone();
+    if (epoch !== auditEpoch) return;
+    if (result?.error && !Array.isArray(result?.results)) {
+      auditError.value = true;
+      auditMessage.value = `审核失败：${result.error}`;
+      return;
+    }
     const rows = result?.results || [];
     const ok = Number(result?.count || 0);
     const skipped = Number(result?.skipped || rows.filter((r: any) => r.stopped).length);
@@ -690,16 +760,23 @@ async function startAudit(packs: Array<{ domain_key: string; pack: string }>) {
         ? `审核已停止：成功 ${ok}，失败 ${fail}，跳过 ${skipped}`
         : `审核已停止：成功 ${ok}，跳过 ${skipped}`;
       auditError.value = Boolean(fail);
+    } else if (!result) {
+      auditError.value = true;
+      auditMessage.value = "审核超时，请刷新后重试。";
     } else {
       auditMessage.value = fail ? `审核结束：成功 ${ok}，失败 ${fail}` : `审核结束：成功 ${ok}`;
       auditError.value = Boolean(fail);
     }
   } catch (err: any) {
+    if (epoch !== auditEpoch) return;
     auditError.value = true;
     auditMessage.value = err?.message || String(err);
   } finally {
-    auditBusy.value = false;
-    auditStopping.value = false;
+    if (epoch === auditEpoch) {
+      auditBusy.value = false;
+      auditStopping.value = false;
+      auditingPackKeys.value = [];
+    }
   }
 }
 
@@ -1034,6 +1111,7 @@ button {
 .check-row {
   margin-bottom: 8px;
 }
+.hint.err,
 .note.err {
   color: #c53030;
 }
@@ -1115,6 +1193,11 @@ button {
   border-color: var(--primary);
   background: #ebf8ff;
 }
+.audit-action-btn.busy {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
 .audit-action-btn:disabled,
 button:disabled {
   opacity: 0.45;
@@ -1160,6 +1243,11 @@ button.primary {
   background: #e2e8f0;
   border-color: #cbd5e1;
 }
+.review-chip.tone-running {
+  color: #1d4ed8;
+  background: #dbeafe;
+  border-color: #bfdbfe;
+}
 .review-verdict {
   font-weight: 600;
   margin: 8px 0;
@@ -1175,6 +1263,9 @@ button.primary {
 }
 .review-verdict.tone-pending {
   color: #334155;
+}
+.review-verdict.tone-running {
+  color: #1d4ed8;
 }
 .modal-reason {
   white-space: pre-wrap;
