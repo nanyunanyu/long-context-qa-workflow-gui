@@ -13,6 +13,7 @@ import {
   CloseOutline,
   PauseOutline,
   PlayOutline,
+  RemoveOutline,
   SearchOutline,
   TimeOutline,
   WarningOutline,
@@ -35,6 +36,8 @@ const icon = computed<Component>(() => {
   switch (props.state) {
     case "passed":
       return CheckmarkOutline;
+    case "borderline_50":
+      return RemoveOutline;
     case "gate_failed":
     case "cancelled":
       return CloseOutline;
@@ -56,6 +59,8 @@ const label = computed(() => {
   switch (props.state) {
     case "passed":
       return "通过";
+    case "borderline_50":
+      return "临界 4/8";
     case "gate_failed":
       return "门禁失败";
     case "cancelled":
@@ -83,13 +88,14 @@ const tone = computed(() => {
   switch (props.state) {
     case "passed":
       return "ok";
-    case "gate_failed":
-    case "cancelled":
-      return "bad";
+    case "borderline_50":
     case "manual_review":
     case "blocked":
     case "paused":
       return "warn";
+    case "gate_failed":
+    case "cancelled":
+      return "bad";
     case "running":
       return "run";
     default:

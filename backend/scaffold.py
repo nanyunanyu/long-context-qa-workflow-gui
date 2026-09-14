@@ -181,6 +181,7 @@ def _make_data_dirs(root: Path) -> None:
         "samples",
         "archive/failed-samples",
         "archive/pending-review",
+        "archive/borderline-50pct",
         "archive/runs",
         "archive/exports",
         "queue/locks",

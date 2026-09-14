@@ -214,7 +214,7 @@ def can_review_pass(task: dict[str, Any]) -> bool:
     return find_manual_review_candidate(task) is not None
 
 
-_TERMINAL_STATUSES = frozenset({"passed", "gate_failed", "blocked", "cancelled"})
+_TERMINAL_STATUSES = frozenset({"passed", "gate_failed", "borderline_50", "blocked", "cancelled"})
 
 
 def task_ended_at(task: dict[str, Any]) -> str | None:
@@ -236,7 +236,7 @@ def task_ended_at(task: dict[str, Any]) -> str | None:
             return str(at)
         if event == "status":
             # e.g. gate_failed → cancelled; … → gate_failed
-            if "→ cancelled" in detail or "→ gate_failed" in detail or "→ blocked" in detail or "→ passed" in detail:
+            if "→ cancelled" in detail or "→ gate_failed" in detail or "→ borderline_50" in detail or "→ blocked" in detail or "→ passed" in detail:
                 return str(at)
             if detail.endswith("cancelled") or "cancelled" in detail.lower():
                 return str(at)
@@ -621,4 +621,114 @@ def human_reject_passed(
         "requeue": requeue_result,
         "task": (requeue_result or {}).get("task")
         or next((t for t in (read_queue(workspace).get("tasks") or []) if t.get("id") == task_id), task),
+    }
+
+
+def hold_borderline_50(
+    workspace: Path,
+    *,
+    task_id: str,
+    avg: float = 0.5,
+    reason: str = "avg_accuracy == 0.5; not in (0, 0.5)",
+) -> dict[str, Any]:
+    """Move a 0/8 holding package into archive/borderline-50pct after a 4/8 rescore."""
+    workspace = workspace.resolve()
+    queue = read_queue(workspace)
+    task = next((t for t in (queue.get("tasks") or []) if isinstance(t, dict) and t.get("id") == task_id), None)
+    if not task:
+        raise KeyError(f"task not found: {task_id}")
+
+    reason_text = (reason or "").strip() or "avg_accuracy == 0.5; not in (0, 0.5)"
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    delivery = find_pending_delivery_dir(workspace, task)
+    moved: dict[str, Any] | None = None
+    dest_rel = None
+    if delivery is not None and delivery.is_dir():
+        dest_root = workspace / "archive" / "borderline-50pct"
+        dest_root.mkdir(parents=True, exist_ok=True)
+        already = "borderline-50pct" in delivery.parts
+        dest = delivery if already else dest_root / delivery.name
+        if not already:
+            if dest.exists():
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+                dest = dest_root / f"{delivery.name}-at50-{stamp}"
+            shutil.move(str(delivery), str(dest))
+        try:
+            from_rel = str(delivery.relative_to(workspace))
+        except ValueError:
+            from_rel = str(delivery)
+        try:
+            dest_rel = str(dest.relative_to(workspace))
+        except ValueError:
+            dest_rel = str(dest)
+        pending_note = dest / "PENDING_REVIEW.md"
+        if pending_note.is_file():
+            pending_note.unlink()
+        note = (
+            "# Borderline 4/8\n\n"
+            "平均正确率恰好 4/8（=50%），**不算通过**，也**不得**放入 `archive/failed-samples/`。\n\n"
+            f"- task_id: `{task_id}`\n"
+            f"- slug: `{task.get('slug')}`\n"
+            f"- avg_accuracy: `{avg}`\n"
+            f"- reason: {reason_text}\n"
+        )
+        (dest / "BORDERLINE_50.md").write_text(note, encoding="utf-8")
+        moved = {"from": from_rel, "to": dest_rel}
+        for row in _candidate_rows(task):
+            row_sd = str(row.get("sample_dir") or "")
+            if (
+                not row_sd
+                or row_sd.endswith(delivery.name)
+                or "pending-review" in row_sd.replace("\\", "/")
+                or "failed-samples" in row_sd.replace("\\", "/")
+            ):
+                row["sample_dir"] = dest_rel
+                row["status"] = "borderline_50"
+                row["review_status"] = "borderline_50"
+                row["avg_accuracy"] = float(avg)
+                row["failure_reason"] = reason_text
+
+    prev = str(task.get("status") or "")
+    task["status"] = "borderline_50"
+    task["review_status"] = "borderline_50"
+    task["avg_accuracy"] = float(avg)
+    task["failure_reason"] = reason_text
+    task["worker_id"] = None
+    if dest_rel:
+        task["sample_dir"] = dest_rel
+    hist = task.setdefault("history", [])
+    if isinstance(hist, list):
+        hist.append(
+            {
+                "at": now,
+                "event": "status",
+                "by": "desktop",
+                "detail": f"{prev} → borderline_50; {reason_text}",
+            }
+        )
+    write_queue(workspace, queue)
+
+    materials = None
+    try:
+        from workflow.materials_status import mark_pack_used
+
+        materials = mark_pack_used(
+            task.get("materials_pack"),
+            result="borderline_50",
+            sample_dir=dest_rel or task.get("sample_dir"),
+            sample_id=task.get("sample_id"),
+            slug=task.get("slug"),
+            root=workspace,
+        )
+        task["materials_status"] = materials
+        write_queue(workspace, queue)
+    except Exception:
+        materials = None
+
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "moved": moved,
+        "materials": materials,
+        "task": next((t for t in (read_queue(workspace).get("tasks") or []) if t.get("id") == task_id), task),
     }

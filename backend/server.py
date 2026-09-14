@@ -12,10 +12,30 @@ from typing import Any
 BACKEND_DIR = Path(__file__).resolve().parent
 DESKTOP_ROOT = BACKEND_DIR.parent
 CODE_ROOT = DESKTOP_ROOT.parent
-if str(CODE_ROOT) not in sys.path:
-    sys.path.insert(0, str(CODE_ROOT))
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR.parent))
+
+
+def _ensure_desktop_package() -> None:
+    """`from desktop.backend` works even if this tree is named long-context-qa-gui."""
+    if str(CODE_ROOT) not in sys.path:
+        sys.path.insert(0, str(CODE_ROOT))
+    if str(DESKTOP_ROOT) not in sys.path:
+        sys.path.insert(0, str(DESKTOP_ROOT))
+    sibling = CODE_ROOT / "desktop"
+    if sibling.is_dir() and (sibling / "backend").is_dir():
+        return
+    existing = sys.modules.get("desktop")
+    if existing is not None and getattr(existing, "__path__", None):
+        return
+    import types
+
+    pkg = types.ModuleType("desktop")
+    pkg.__file__ = str(DESKTOP_ROOT / "__init__.py")
+    pkg.__path__ = [str(DESKTOP_ROOT)]  # type: ignore[attr-defined]
+    pkg.__package__ = "desktop"
+    sys.modules["desktop"] = pkg
+
+
+_ensure_desktop_package()
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware

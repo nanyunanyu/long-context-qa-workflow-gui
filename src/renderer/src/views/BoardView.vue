@@ -275,6 +275,12 @@
           </div>
         </div>
       </div>
+      <FilterSummaryCard
+        title="当前筛选汇总"
+        unit="条"
+        :total="filteredTasks.length"
+        :groups="boardSummaryGroups"
+      />
       <table class="board-table">
         <thead>
           <tr>
@@ -519,12 +525,15 @@ import {
   matchesMaterialQuery,
   passColumnLabel,
   passColumnTitle,
+  countByDomain,
+  countByVisualStatus,
   passVisualState,
   taskFilterDay,
   taskMatchesMaterialQuery,
   taskSlugParts,
   taskVisualState,
 } from "../api";
+import FilterSummaryCard, { type SummaryGroup } from "../components/FilterSummaryCard.vue";
 import StatusIcon from "../components/StatusIcon.vue";
 import StageProgress from "../components/StageProgress.vue";
 
@@ -546,7 +555,9 @@ const vClickOutside: Directive = {
 function boardStatusesFromPrefs(prefs: any): string[] | null {
   const saved = prefs?.board?.selected_statuses;
   if (!Array.isArray(saved)) return null;
-  return saved.filter((s: string) => ALL_QUEUE_STATUSES.includes(s));
+  const known = saved.filter((s: string) => ALL_QUEUE_STATUSES.includes(s));
+  const missing = ALL_QUEUE_STATUSES.filter((s) => !known.includes(s));
+  return [...known, ...missing];
 }
 
 function boardDateFromPrefs(prefs: any, key: "date_from" | "date_to"): string {
@@ -746,6 +757,26 @@ const filteredTasks = computed(() => {
   });
   return [...rows].sort(compareBoardTasks);
 });
+
+const boardSummaryGroups = computed<SummaryGroup[]>(() => [
+  {
+    name: "状态",
+    items: countByVisualStatus(filteredTasks.value, props.snapshot).map((row) => ({
+      key: row.state,
+      count: row.count,
+      state: row.state,
+    })),
+  },
+  {
+    name: "领域",
+    items: countByDomain(filteredTasks.value).map((row) => ({
+      key: row.key,
+      count: row.count,
+      domainKey: row.key,
+      domainLabel: row.label,
+    })),
+  },
+]);
 
 function clearDateFilter() {
   dateFrom.value = "";
@@ -1341,6 +1372,13 @@ function autoReviewPresentation(record: any) {
   if (action === "error") {
     return { label: "自动复验执行失败", tone: "abort", headline: "判定已出，但后续入库/打回失败" };
   }
+  if (action === "borderline_50") {
+    return {
+      label: "自动复验临界 4/8",
+      tone: "abort",
+      headline: "假阴性改判后恰好 4/8，已进临界归档（不算通过，不入 failed-samples）",
+    };
+  }
   if (action === "rejected" || verdict === "fail") {
     const rescored = record?.rescored_avg_accuracy != null;
     return {
@@ -1438,7 +1476,7 @@ async function autoReview(task: any) {
     return;
   }
   const ok = window.confirm(
-    `对「${task.slug}」调用大模型自动复验？\n通过则补跑消融入库，不通过则打回 failed-samples。`
+    `对「${task.slug}」调用大模型自动复验？\n通过则补跑消融入库；恰好 4/8 进临界归档；过易则打回 failed-samples。`
   );
   if (!ok) return;
   statusBusy.value = task.id;
