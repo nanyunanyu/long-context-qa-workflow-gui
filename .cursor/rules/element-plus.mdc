@@ -1,0 +1,30 @@
+---
+description: Use Element Plus components and icons in the desktop GUI renderer
+globs: src/renderer/**/*.{vue,ts,css}
+alwaysApply: false
+---
+
+# Element Plus only
+
+Prefer Element Plus components. Do not reimplement buttons, dialogs, forms, tables, menus, or notifications.
+
+- Buttons: `el-button`
+- Dialogs: `el-dialog`
+- Confirms / toasts: `ElMessageBox` / `ElMessage` (see `src/renderer/src/ui.ts`)
+- Forms: `el-form`, `el-input`, `el-select`, `el-checkbox`, `el-radio`, `el-date-picker`
+- Tables: `el-table`
+- Nav: `el-menu`
+- Menus: `el-dropdown`
+- Tags / chips: `el-tag`
+
+Icons must come from `@element-plus/icons-vue` via `<el-icon><Name /></el-icon>`. Do not hand-write SVG paths or import `@vicons/*`.
+
+```vue
+<!-- BAD -->
+<button class="primary">保存</button>
+<svg viewBox="0 0 16 16"><path d="..." /></svg>
+
+<!-- GOOD -->
+<el-button type="primary">保存</el-button>
+<el-icon><Setting /></el-icon>
+```

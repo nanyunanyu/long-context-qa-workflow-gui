@@ -1,95 +1,88 @@
 <template>
   <div class="settings">
-    <div class="bar">
-      <h2>密钥与模型</h2>
-      <div class="actions">
-        <button :disabled="busy" @click="reload">重新加载</button>
-        <button class="primary" :disabled="busy" @click="save">保存</button>
-      </div>
-    </div>
-    <p class="note">
-      产线三路（出题 / Qwen / 判分）各自配置 model、base_url、api_key 和推理强度。下方复验与材料审核可单独配，也可留空密钥以复用判分密钥。密钥保存在
-      <code>~/.config/lcqa-desktop/</code>，不会写入仓库。留空 api_key 表示不改动已有密钥。
-      判分按覆盖式：金标要点不漏、且无错误内容即可得分，不必字字对应。
-    </p>
-    <p v-if="message" class="msg" :class="{ err: isError }">{{ message }}</p>
-
-    <h3 class="group">产线</h3>
-    <section v-for="role in pipelineRoles" :key="role" class="card">
-      <h3>{{ labels[role] }}</h3>
-      <label>
-        模型 ID
-        <input v-model="form[role].model" type="text" :disabled="busy" />
-      </label>
-      <label>
-        Base URL
-        <input v-model="form[role].base_url" type="text" :disabled="busy" :placeholder="placeholders[role]" />
-      </label>
-      <label>
-        推理强度
-        <select v-model="form[role].reasoning_effort" :disabled="busy">
-          <option v-for="item in effortOptions" :key="item.value" :value="item.value">
-            {{ item.label }}
-          </option>
-        </select>
-      </label>
-      <label>
-        API Key
-        <div class="key-row">
-          <input
-            v-model="form[role].api_key"
-            :type="show[role] ? 'text' : 'password'"
-            :disabled="busy"
-            :placeholder="form[role].api_key_set ? `已配置 ${form[role].api_key_mask}` : '未配置'"
-          />
-          <button type="button" class="ghost" @click="show[role] = !show[role]">
-            {{ show[role] ? "隐藏" : "显示" }}
-          </button>
+    <el-card class="page-card" shadow="never">
+      <template #header>
+        <div class="page-header">
+          <span class="page-title">密钥与模型</span>
+          <el-space>
+            <el-button :loading="busy" @click="reload">
+              <el-icon class="el-icon--left"><Refresh /></el-icon>
+              重新加载
+            </el-button>
+            <el-button type="primary" :loading="busy" @click="save">
+              <el-icon class="el-icon--left"><CircleCheck /></el-icon>
+              保存
+            </el-button>
+          </el-space>
         </div>
-      </label>
-      <p class="hint">
-        状态：{{ form[role].api_key_set ? "密钥已就绪" : "缺少密钥" }}
-        <template v-if="roleNotes[role]"> · {{ roleNotes[role] }}</template>
-      </p>
-    </section>
+      </template>
 
-    <h3 class="group">复验与材料审核</h3>
-    <section v-for="role in auxRoles" :key="role" class="card">
-      <h3>{{ labels[role] }}</h3>
-      <label>
-        模型 ID
-        <input v-model="form[role].model" type="text" :disabled="busy" />
-      </label>
-      <label>
-        Base URL
-        <input v-model="form[role].base_url" type="text" :disabled="busy" :placeholder="placeholders[role]" />
-      </label>
-      <label>
-        推理强度
-        <select v-model="form[role].reasoning_effort" :disabled="busy">
-          <option v-for="item in effortOptions" :key="item.value" :value="item.value">
-            {{ item.label }}
-          </option>
-        </select>
-      </label>
-      <label>
-        API Key
-        <div class="key-row">
-          <input
-            v-model="form[role].api_key"
-            :type="show[role] ? 'text' : 'password'"
-            :disabled="busy"
-            :placeholder="auxKeyPlaceholder(role)"
-          />
-          <button type="button" class="ghost" @click="show[role] = !show[role]">
-            {{ show[role] ? "隐藏" : "显示" }}
-          </button>
-        </div>
-      </label>
-      <p class="hint">
-        状态：{{ auxKeyStatus(role) }}
-        <template v-if="roleNotes[role]"> · {{ roleNotes[role] }}</template>
-      </p>
+      <el-alert type="info" show-icon :closable="false">
+        产线三路（出题 / Qwen / 判分）各自配置 model、base_url、api_key 和推理强度。下方复验与材料审核可单独配，也可留空密钥以复用判分密钥。密钥保存在
+        <code>~/.config/lcqa-desktop/</code>
+        ，不会写入仓库。留空 api_key 表示不改动已有密钥。判分按覆盖式：金标要点不漏、且无错误内容即可得分，不必字字对应。
+      </el-alert>
+    </el-card>
+
+    <section v-for="group in groups" :key="group.id" class="group">
+      <el-divider content-position="left">{{ group.title }}</el-divider>
+      <el-card v-for="role in group.roles" :key="role" class="role-card" shadow="never">
+        <template #header>
+          <div class="role-header">
+            <span>{{ labels[role] }}</span>
+            <el-tag :type="keyTagType(role)" effect="light" size="small">
+              {{ keyStatus(role) }}
+            </el-tag>
+          </div>
+        </template>
+        <el-form :disabled="busy" label-width="90px" @submit.prevent>
+          <el-row :gutter="16">
+            <el-col :xs="24" :sm="14">
+              <el-form-item label="模型 ID">
+                <el-input v-model="form[role].model">
+                  <template #prefix>
+                    <el-icon><Cpu /></el-icon>
+                  </template>
+                </el-input>
+              </el-form-item>
+            </el-col>
+            <el-col :xs="24" :sm="10">
+              <el-form-item label="推理强度">
+                <el-select v-model="form[role].reasoning_effort" style="width: 100%">
+                  <el-option
+                    v-for="item in effortOptions"
+                    :key="item.value"
+                    :label="item.label"
+                    :value="item.value"
+                  />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-form-item label="Base URL">
+            <el-input v-model="form[role].base_url" :placeholder="placeholders[role]">
+              <template #prefix>
+                <el-icon><Link /></el-icon>
+              </template>
+            </el-input>
+          </el-form-item>
+          <el-form-item label="API Key">
+            <el-input
+              v-model="form[role].api_key"
+              type="password"
+              show-password
+              :placeholder="keyPlaceholder(role)"
+            >
+              <template #prefix>
+                <el-icon><Key /></el-icon>
+              </template>
+            </el-input>
+          </el-form-item>
+        </el-form>
+        <el-text v-if="roleNotes[role]" type="info" size="small" class="role-note">
+          {{ roleNotes[role] }}
+        </el-text>
+      </el-card>
     </section>
   </div>
 </template>
@@ -97,12 +90,20 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import { apiGet, apiPut } from "../api";
+import { toastError, toastSuccess } from "../ui";
 
 const emit = defineEmits<{ saved: [] }>();
 
 const pipelineRoles = ["generation", "evaluation", "judge"] as const;
 const auxRoles = ["review", "material_audit"] as const;
 const roleOrder = [...pipelineRoles, ...auxRoles] as const;
+type RoleId = (typeof roleOrder)[number];
+
+const groups = [
+  { id: "pipeline", title: "产线", roles: pipelineRoles },
+  { id: "aux", title: "复验与材料审核", roles: auxRoles },
+] as const;
+
 const labels: Record<string, string> = {
   generation: "出题模型",
   evaluation: "Qwen 评测",
@@ -157,16 +158,7 @@ const form = reactive<Record<string, RoleForm>>({
   review: emptyRole("gpt-5.6-luna", "", "medium"),
   material_audit: emptyRole("gpt-5.6-luna", "", "medium"),
 });
-const show = reactive<Record<string, boolean>>({
-  generation: false,
-  evaluation: false,
-  judge: false,
-  review: false,
-  material_audit: false,
-});
 const busy = ref(false);
-const message = ref("");
-const isError = ref(false);
 
 function emptyRole(model: string, base_url = "", reasoning_effort = "medium"): RoleForm {
   return {
@@ -180,7 +172,7 @@ function emptyRole(model: string, base_url = "", reasoning_effort = "medium"): R
   };
 }
 
-function applyRoleRow(role: (typeof roleOrder)[number], row: any, keepEffort: boolean) {
+function applyRoleRow(role: RoleId, row: any, keepEffort: boolean) {
   form[role].model = row.model || form[role].model;
   form[role].base_url = row.base_url || "";
   form[role].api_key = "";
@@ -195,17 +187,41 @@ function applyRoleRow(role: (typeof roleOrder)[number], row: any, keepEffort: bo
   }
 }
 
+function isAux(role: RoleId): role is (typeof auxRoles)[number] {
+  return (auxRoles as readonly string[]).includes(role);
+}
+
+function keyStatus(role: RoleId) {
+  const row = form[role];
+  if (isAux(role) && row.api_key_source === "judge") return "复用判分密钥";
+  if (row.api_key_set) return "密钥已就绪";
+  return isAux(role) ? "缺少密钥（保存后仍可回落到判分密钥）" : "缺少密钥";
+}
+
+function keyTagType(role: RoleId): "success" | "warning" | "info" {
+  const row = form[role];
+  if (isAux(role) && row.api_key_source === "judge") return "info";
+  return row.api_key_set ? "success" : "warning";
+}
+
+function keyPlaceholder(role: RoleId) {
+  const row = form[role];
+  if (isAux(role) && row.api_key_source === "judge") {
+    return `复用判分密钥 ${row.api_key_mask || ""}`.trim();
+  }
+  if (row.api_key_set) return `已配置 ${row.api_key_mask}`;
+  return isAux(role) ? "未配置（将复用判分密钥）" : "未配置";
+}
+
 async function reload() {
   busy.value = true;
-  message.value = "";
   try {
     const data = await apiGet("/api/settings");
     for (const role of roleOrder) {
       applyRoleRow(role, data.roles?.[role] || {}, false);
     }
   } catch (err: any) {
-    isError.value = true;
-    message.value = err.message || String(err);
+    toastError(err);
   } finally {
     busy.value = false;
   }
@@ -213,8 +229,6 @@ async function reload() {
 
 async function save() {
   busy.value = true;
-  message.value = "";
-  isError.value = false;
   try {
     const roles: Record<string, any> = {};
     for (const role of roleOrder) {
@@ -233,28 +247,13 @@ async function save() {
     bits.push(data.ready ? "已保存，产线三路密钥就绪" : "已保存，但产线仍有角色缺少密钥");
     if (data.review_ready) bits.push("复验可用");
     if (data.material_audit_ready) bits.push("材料审核可用");
-    message.value = bits.join("；");
+    toastSuccess(bits.join("；"));
     emit("saved");
   } catch (err: any) {
-    isError.value = true;
-    message.value = err.message || String(err);
+    toastError(err);
   } finally {
     busy.value = false;
   }
-}
-
-function auxKeyPlaceholder(role: (typeof auxRoles)[number]) {
-  const row = form[role];
-  if (row.api_key_source === "judge") return `复用判分密钥 ${row.api_key_mask || ""}`.trim();
-  if (row.api_key_set) return `已配置 ${row.api_key_mask}`;
-  return "未配置（将复用判分密钥）";
-}
-
-function auxKeyStatus(role: (typeof auxRoles)[number]) {
-  const row = form[role];
-  if (row.api_key_source === "judge") return "复用判分密钥";
-  if (row.api_key_set) return "密钥已就绪";
-  return "缺少密钥（保存后仍可回落到判分密钥）";
 }
 
 onMounted(reload);
@@ -262,91 +261,43 @@ onMounted(reload);
 
 <style scoped>
 .settings {
-  max-width: 720px;
+  max-width: 840px;
 }
-.bar {
+.page-card {
+  margin-bottom: 4px;
+}
+.page-header,
+.role-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
-h2,
-h3 {
-  margin: 0;
+.page-title {
+  font-size: 16px;
+  font-weight: 600;
   color: var(--primary-dark);
 }
-h3.group {
-  margin: 22px 0 0;
-  font-size: 14px;
+.role-header span {
+  font-weight: 600;
+  color: var(--primary-dark);
 }
-.actions {
-  display: flex;
-  gap: 8px;
+.group {
+  margin-top: 4px;
 }
-.note,
-.hint {
-  color: var(--muted);
-  font-size: 13px;
+.role-card {
+  margin-bottom: 14px;
+}
+.role-card :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+.role-card :deep(.el-form-item:last-of-type) {
+  margin-bottom: 0;
+}
+.role-note {
+  display: block;
+  margin-top: 12px;
   line-height: 1.6;
-}
-.msg {
-  color: var(--primary);
-  font-size: 13px;
-}
-.msg.err {
-  color: #c53030;
-}
-.card {
-  margin-top: 14px;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--muted);
-}
-input,
-select {
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font-size: 14px;
-  color: var(--text);
-  background: #fff;
-}
-.key-row {
-  display: flex;
-  gap: 8px;
-}
-.key-row input {
-  flex: 1;
-}
-button {
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--primary-dark);
-  border-radius: 8px;
-  padding: 8px 14px;
-  cursor: pointer;
-}
-button.primary {
-  background: var(--primary);
-  color: #fff;
-  border-color: var(--primary);
-}
-button.ghost {
-  white-space: nowrap;
-}
-button:disabled {
-  opacity: 0.5;
 }
 code {
   font-size: 12px;
