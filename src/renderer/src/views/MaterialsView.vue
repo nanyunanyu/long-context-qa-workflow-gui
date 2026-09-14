@@ -2,88 +2,94 @@
   <div>
     <div class="bar">
       <h2>材料目录</h2>
-      <button @click="load">刷新</button>
-      <n-dropdown
-        trigger="click"
-        placement="bottom-start"
-        :options="auditActionOptions"
-        :disabled="auditBusy"
-        @select="onAuditActionSelect"
-      >
-        <button
-          type="button"
-          class="ops-menu-btn"
-          :disabled="auditBusy"
-          title="审核当前列表或已勾选材料包"
-        >
+      <el-button @click="load">刷新</el-button>
+      <el-dropdown trigger="click" :disabled="auditBusy" @command="onAuditActionSelect">
+        <el-button :disabled="auditBusy" title="审核当前列表或已勾选材料包">
           {{ auditBusy ? "审核中…" : "操作" }}
-          <span class="action-caret" aria-hidden="true">▾</span>
-        </button>
-      </n-dropdown>
-      <button type="button" :disabled="!auditBusy" @click="stopAudit">
+          <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item
+              v-for="opt in auditActionOptions"
+              :key="opt.key"
+              :command="opt.key"
+              :disabled="opt.disabled"
+              :title="opt.title"
+            >
+              {{ opt.label }}
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+      <el-button :disabled="!auditBusy" @click="stopAudit">
         {{ auditStopping ? "停止中…" : "停止审核" }}
-      </button>
-      <span v-if="auditMessage" class="hint" :class="{ err: auditError }">{{ auditMessage }}</span>
+      </el-button>
+      <el-alert
+        v-if="auditMessage"
+        :type="auditError ? 'error' : 'info'"
+        :title="auditMessage"
+        show-icon
+        :closable="false"
+        class="audit-alert"
+      />
       <span v-if="selectedPackPaths.length" class="hint">
         已选 {{ selectedPackPaths.length }}
         <template v-if="hiddenSelectedCount">（另有 {{ hiddenSelectedCount }} 个被当前筛选隐藏）</template>
       </span>
-      <label class="search-field">
-        搜索材料
-        <input
-          v-model="packSearch"
-          type="search"
-          placeholder="包名 / 领域 / 路径"
-          autocomplete="off"
-        />
-      </label>
-      <div class="filter-wrap" v-click-outside="closeFilter">
-        <button type="button" :class="{ active: filterOpen }" @click="filterOpen = !filterOpen">筛选</button>
-        <div v-if="filterOpen" class="filter-panel" role="dialog" aria-label="材料筛选">
-          <div class="filter-panel-head">
-            <strong>材料筛选</strong>
-          </div>
-          <h4>领域</h4>
-          <div class="drawer-actions">
-            <button type="button" @click="selectAllDomains">全选</button>
-            <button type="button" @click="selectedDomains = []">清空</button>
-          </div>
-          <n-checkbox-group v-model:value="selectedDomains">
-            <div v-for="d in domainOptions" :key="d.value" class="check-row">
-              <n-checkbox :value="d.value" :label="d.label" />
-            </div>
-          </n-checkbox-group>
-
-          <h4 class="mt">状态</h4>
-          <div class="drawer-actions">
-            <button type="button" @click="selectAllStatuses">全选</button>
-            <button type="button" @click="selectedStatuses = []">清空</button>
-          </div>
-          <n-checkbox-group v-model:value="selectedStatuses">
-            <div v-for="s in MATERIAL_STATUS_OPTIONS" :key="s.value" class="check-row">
-              <n-checkbox :value="s.value" :label="s.label" />
-            </div>
-          </n-checkbox-group>
-
-          <h4 class="mt">审核</h4>
-          <div class="drawer-actions">
-            <button type="button" @click="selectAllAudits">全选</button>
-            <button type="button" @click="selectedAudits = []">清空</button>
-          </div>
-          <n-checkbox-group v-model:value="selectedAudits">
-            <div v-for="a in MATERIAL_AUDIT_OPTIONS" :key="a.value" class="check-row">
-              <n-checkbox :value="a.value" :label="a.label" />
-            </div>
-          </n-checkbox-group>
+      <el-input
+        v-model="packSearch"
+        class="search-input"
+        clearable
+        placeholder="包名 / 领域 / 路径"
+        :prefix-icon="Search"
+      />
+      <el-popover v-model:visible="filterOpen" trigger="click" placement="bottom-start" :width="300">
+        <template #reference>
+          <el-button :type="filterOpen ? 'primary' : 'default'">筛选</el-button>
+        </template>
+        <div class="filter-panel-head">
+          <strong>材料筛选</strong>
         </div>
-      </div>
+        <h4>领域</h4>
+        <div class="drawer-actions">
+          <el-button type="primary" link @click="selectAllDomains">全选</el-button>
+          <el-button type="primary" link @click="selectedDomains = []">清空</el-button>
+        </div>
+        <el-checkbox-group v-model="selectedDomains">
+          <div v-for="d in domainOptions" :key="d.value" class="check-row">
+            <el-checkbox :value="d.value">{{ d.label }}</el-checkbox>
+          </div>
+        </el-checkbox-group>
+
+        <h4 class="mt">状态</h4>
+        <div class="drawer-actions">
+          <el-button type="primary" link @click="selectAllStatuses">全选</el-button>
+          <el-button type="primary" link @click="selectedStatuses = []">清空</el-button>
+        </div>
+        <el-checkbox-group v-model="selectedStatuses">
+          <div v-for="s in MATERIAL_STATUS_OPTIONS" :key="s.value" class="check-row">
+            <el-checkbox :value="s.value">{{ s.label }}</el-checkbox>
+          </div>
+        </el-checkbox-group>
+
+        <h4 class="mt">审核</h4>
+        <div class="drawer-actions">
+          <el-button type="primary" link @click="selectAllAudits">全选</el-button>
+          <el-button type="primary" link @click="selectedAudits = []">清空</el-button>
+        </div>
+        <el-checkbox-group v-model="selectedAudits">
+          <div v-for="a in MATERIAL_AUDIT_OPTIONS" :key="a.value" class="check-row">
+            <el-checkbox :value="a.value">{{ a.label }}</el-checkbox>
+          </div>
+        </el-checkbox-group>
+      </el-popover>
       <span class="hint">已显示 {{ visiblePackCount }} / {{ totalPackCount }} 包</span>
     </div>
     <p class="note">
       请按领域 → 主题包放入 pdf/html 与对应 md，并维护 CATALOG.json。结构检查在本页完成；「审核」会调用大模型按选材标准写回
       CATALOG.llm_audit，不拦入队。
     </p>
-    <p v-if="auditMessage" class="note" :class="{ err: auditError }">{{ auditMessage }}</p>
     <pre v-if="data.readme" class="readme">{{ data.readme }}</pre>
 
     <FilterSummaryCard
@@ -93,162 +99,147 @@
       :groups="materialSummaryGroups"
     />
 
-    <div v-for="domain in visibleDomains" :key="domain.domain_key" class="domain">
+    <el-card v-for="domain in visibleDomains" :key="domain.domain_key" class="domain" shadow="never">
       <h3>{{ domain.domain }} <small>{{ domain.domain_key }}</small></h3>
-      <table class="materials-table">
-        <colgroup>
-          <col class="col-pack" />
-          <col class="col-status" />
-          <col class="col-audit" />
-          <col class="col-hint" />
-          <col class="col-action" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>
-              <div class="pack-head">
-                <input
-                  type="checkbox"
-                  :checked="domainAllSelected(domain)"
-                  :indeterminate="domainSomeSelected(domain)"
-                  :disabled="auditBusy || !domain.packs?.length"
-                  @change="toggleDomainPacks(domain)"
-                />
-                包
-              </div>
-            </th>
-            <th>状态</th>
-            <th>审核</th>
-            <th>提示</th>
-            <th class="col-action">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="pack in domain.packs" :key="pack.path">
-            <td>
-              <div class="pack-cell">
-                <input
-                  type="checkbox"
-                  class="pack-check"
-                  :checked="selectedPackSet.has(packPath(pack))"
-                  :disabled="auditBusy"
-                  @change="togglePack(pack)"
-                />
-                <div class="pack-body">
-                  <div class="slug-cell">
-                    <div class="slug-tags">
-                      <span
-                        class="domain-tag"
-                        :class="'tone-' + domainTagTone(String(pack.domain_key || domain.domain_key || ''))"
-                        :title="String(pack.domain_key || domain.domain_key || '')"
+      <el-table :data="domain.packs" size="small">
+        <el-table-column min-width="280">
+          <template #header>
+            <div class="pack-head">
+              <el-checkbox
+                :model-value="domainAllSelected(domain)"
+                :indeterminate="domainSomeSelected(domain)"
+                :disabled="auditBusy || !domain.packs?.length"
+                @change="toggleDomainPacks(domain)"
+              />
+              包
+            </div>
+          </template>
+          <template #default="{ row }">
+            <div class="pack-cell">
+              <el-checkbox
+                :model-value="selectedPackSet.has(packPath(row))"
+                :disabled="auditBusy"
+                @change="togglePack(row)"
+              />
+              <div class="pack-body">
+                <div class="slug-cell">
+                  <div class="slug-tags">
+                    <el-tag
+                      size="small"
+                      class="domain-tag"
+                      :class="'tone-' + domainTagTone(String(row.domain_key || domain.domain_key || ''))"
+                      :title="String(row.domain_key || domain.domain_key || '')"
+                    >
+                      {{ domain.domain || row.domain_key || domain.domain_key || "—" }}
+                    </el-tag>
+                    <template v-for="kind in [docKindPresentation(row.doc_count, row.doc_kind)]" :key="row.path + '-dk'">
+                      <el-tag
+                        v-if="kind.show"
+                        size="small"
+                        :class="'tone-' + kind.tone"
+                        :type="chipTagType(kind.tone)"
+                        effect="light"
+                        :title="kind.title"
                       >
-                        {{ domain.domain || pack.domain_key || domain.domain_key || "—" }}
-                      </span>
-                      <template v-for="kind in [docKindPresentation(pack.doc_count, pack.doc_kind)]" :key="pack.path + '-dk'">
-                        <span v-if="kind.show" class="meta-chip" :class="'tone-' + kind.tone" :title="kind.title">
-                          {{ kind.label }}
-                        </span>
-                      </template>
-                    </div>
-                    <span class="pack-name" :title="pack.pack">{{ pack.pack }}</span>
+                        {{ kind.label }}
+                      </el-tag>
+                    </template>
                   </div>
-                  <div class="muted pack-path">{{ pack.path }}</div>
+                  <span class="pack-name" :title="row.pack">{{ row.pack }}</span>
                 </div>
+                <div class="muted pack-path">{{ row.path }}</div>
               </div>
-            </td>
-            <td class="cell-chip">
-              <template v-for="st in [materialStatusPresentation(pack.status)]" :key="pack.path + '-st'">
-                <span class="meta-chip" :class="'tone-' + st.bucket" :title="st.title">
-                  {{ st.label }}
-                </span>
-                <div v-if="st.detail" class="cell-note">{{ st.detail }}</div>
-              </template>
-            </td>
-            <td class="cell-chip">
-              <template v-for="au in [auditPresentation(pack.llm_audit, isPackAuditing(pack, domain))]" :key="pack.path + '-au'">
-                <button
-                  type="button"
-                  class="review-chip"
-                  :class="'tone-' + au.tone"
-                  :title="au.title"
-                  @click="openAuditDialog(pack, isPackAuditing(pack, domain))"
-                >
-                  {{ au.label }}
-                </button>
-              </template>
-            </td>
-            <td class="cell-chip">
-              <template v-for="hn in [hintPresentation(pack)]" :key="pack.path + '-hn'">
-                <span class="meta-chip" :class="'tone-' + hn.tone" :title="hn.title">
-                  {{ hn.label }}
-                </span>
-                <div v-if="hn.detail" class="cell-note">{{ hn.detail }}</div>
-              </template>
-            </td>
-            <td class="col-action">
-              <button
-                type="button"
-                class="audit-action-btn"
-                :class="{ busy: isPackAuditing(pack, domain) }"
-                :disabled="auditBusy && !isPackAuditing(pack, domain)"
-                @click.stop="auditOne(pack, domain.domain_key)"
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="140">
+          <template #default="{ row }">
+            <template v-for="st in [materialStatusPresentation(row.status)]" :key="row.path + '-st'">
+              <el-tag size="small" :class="'tone-' + st.bucket" :type="chipTagType(st.bucket)" effect="light" :title="st.title">
+                {{ st.label }}
+              </el-tag>
+              <div v-if="st.detail" class="cell-note">{{ st.detail }}</div>
+            </template>
+          </template>
+        </el-table-column>
+        <el-table-column label="审核" width="140">
+          <template #default="{ row }">
+            <template v-for="au in [auditPresentation(row.llm_audit, isPackAuditing(row, domain))]" :key="row.path + '-au'">
+              <el-tag
+                size="small"
+                class="clickable-tag"
+                :class="'tone-' + au.tone"
+                :type="chipTagType(au.tone)"
+                effect="light"
+                :title="au.title"
+                @click="openAuditDialog(row, isPackAuditing(row, domain))"
               >
-                {{ isPackAuditing(pack, domain) ? "审核中" : "审核" }}
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <p v-if="!visibleDomains.length" class="muted empty">
-      {{ packSearch.trim() ? "没有匹配当前搜索的材料包。" : "当前筛选无材料包。" }}
-    </p>
+                {{ au.label }}
+              </el-tag>
+            </template>
+          </template>
+        </el-table-column>
+        <el-table-column label="提示" min-width="160">
+          <template #default="{ row }">
+            <template v-for="hn in [hintPresentation(row)]" :key="row.path + '-hn'">
+              <el-tag size="small" :class="'tone-' + hn.tone" :type="chipTagType(hn.tone)" effect="light" :title="hn.title">
+                {{ hn.label }}
+              </el-tag>
+              <div v-if="hn.detail" class="cell-note">{{ hn.detail }}</div>
+            </template>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" align="center">
+          <template #default="{ row }">
+            <el-button
+              size="small"
+              :type="isPackAuditing(row, domain) ? 'primary' : 'default'"
+              :loading="isPackAuditing(row, domain)"
+              :disabled="auditBusy && !isPackAuditing(row, domain)"
+              @click.stop="auditOne(row, domain.domain_key)"
+            >
+              {{ isPackAuditing(row, domain) ? "审核中" : "审核" }}
+            </el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+    <el-empty
+      v-if="!visibleDomains.length"
+      :description="packSearch.trim() ? '没有匹配当前搜索的材料包。' : '当前筛选无材料包。'"
+    />
 
-    <div v-if="auditDialog.open" class="modal-backdrop" @click.self="closeAuditDialog">
-      <div class="modal-card modal-wide" role="dialog" aria-label="材料审核结果">
-        <h3>材料审核结果</h3>
-        <p class="muted">
-          材料包 <strong>{{ auditDialog.pack }}</strong>
-        </p>
-        <p class="review-verdict" :class="'tone-' + auditDialog.tone">{{ auditDialog.headline }}</p>
-        <p class="modal-reason">{{ auditDialog.summary || "—" }}</p>
-        <p v-if="auditDialog.notes" class="modal-reason">{{ auditDialog.notes }}</p>
-        <ul class="modal-checks">
-          <li>许可可用：{{ boolLabel(auditDialog.licenseOk) }}</li>
-          <li>体量足够：{{ boolLabel(auditDialog.enoughLength) }}</li>
-          <li>长上下文潜力：{{ boolLabel(auditDialog.longContextPotential) }}</li>
-          <li>足够冷门：{{ boolLabel(auditDialog.coldEnough) }}</li>
-          <li>模型：{{ auditDialog.model || "—" }}</li>
-          <li>时间：{{ auditDialog.reviewedAt || "—" }}</li>
-        </ul>
-        <div class="modal-actions">
-          <button type="button" class="primary" @click="closeAuditDialog">关闭</button>
-        </div>
-      </div>
-    </div>
+    <el-dialog v-model="auditDialog.open" title="材料审核结果" width="640px">
+      <p class="muted">
+        材料包 <strong>{{ auditDialog.pack }}</strong>
+      </p>
+      <p class="review-verdict" :class="'tone-' + auditDialog.tone">{{ auditDialog.headline }}</p>
+      <p class="modal-reason">{{ auditDialog.summary || "—" }}</p>
+      <p v-if="auditDialog.notes" class="modal-reason">{{ auditDialog.notes }}</p>
+      <ul class="modal-checks">
+        <li>许可可用：{{ boolLabel(auditDialog.licenseOk) }}</li>
+        <li>体量足够：{{ boolLabel(auditDialog.enoughLength) }}</li>
+        <li>长上下文潜力：{{ boolLabel(auditDialog.longContextPotential) }}</li>
+        <li>足够冷门：{{ boolLabel(auditDialog.coldEnough) }}</li>
+        <li>模型：{{ auditDialog.model || "—" }}</li>
+        <li>时间：{{ auditDialog.reviewedAt || "—" }}</li>
+      </ul>
+      <template #footer>
+        <el-button type="primary" @click="closeAuditDialog">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onDeactivated, onMounted, onUnmounted, ref, watch, type Directive } from "vue";
-import { NCheckbox, NCheckboxGroup, NDropdown, type DropdownOption } from "naive-ui";
+import { computed, onDeactivated, onMounted, onUnmounted, ref, watch } from "vue";
+import { ArrowDown, Search } from "@element-plus/icons-vue";
 import { apiGet, apiPost, apiPut, domainTagTone, docKindPresentation, docKindSearchText, matchesMaterialQuery } from "../api";
+import { chipTagType, type MenuAction } from "../ui";
 import FilterSummaryCard, { type SummaryGroup } from "../components/FilterSummaryCard.vue";
 
 const props = defineProps<{ initialPrefs?: any }>();
 const emit = defineEmits(["prefsSaved"]);
-
-const vClickOutside: Directive = {
-  mounted(el, binding) {
-    (el as any).__clickOutside = (ev: MouseEvent) => {
-      if (!el.contains(ev.target as Node)) binding.value?.(ev);
-    };
-    document.addEventListener("mousedown", (el as any).__clickOutside);
-  },
-  unmounted(el) {
-    document.removeEventListener("mousedown", (el as any).__clickOutside);
-  },
-};
 
 const MATERIAL_STATUS_OPTIONS = [
   { value: "READY", label: "READY（就绪）" },
@@ -309,9 +300,6 @@ const auditDialog = ref({
   model: "",
   reviewedAt: "",
 });
-function closeFilter() {
-  filterOpen.value = false;
-}
 const statusHydrated = statusesFromPrefs(props.initialPrefs);
 const auditHydrated = auditsFromPrefs(props.initialPrefs);
 const selectedDomains = ref<string[]>([]);
@@ -535,22 +523,18 @@ function withCount(label: string, count: number) {
   return count ? `${label}（${count}）` : label;
 }
 
-const auditActionOptions = computed<DropdownOption[]>(() => [
+const auditActionOptions = computed<MenuAction[]>(() => [
   {
     label: withCount("审核当前列表", visiblePackCount.value),
     key: "visible",
     disabled: auditBusy.value || !visiblePackCount.value,
-    props: {
-      title: visiblePackCount.value ? "审核当前筛选可见的全部材料包" : "当前列表没有可审核的材料包",
-    },
+    title: visiblePackCount.value ? "审核当前筛选可见的全部材料包" : "当前列表没有可审核的材料包",
   },
   {
     label: withCount("审核勾选项", selectedPackPaths.value.length),
     key: "selected",
     disabled: auditBusy.value || !selectedPackPaths.value.length,
-    props: {
-      title: selectedPackPaths.value.length ? "审核已勾选的材料包" : "请先勾选材料包",
-    },
+    title: selectedPackPaths.value.length ? "审核已勾选的材料包" : "请先勾选材料包",
   },
 ]);
 
@@ -906,49 +890,12 @@ onMounted(async () => {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  position: relative;
-  z-index: 2;
 }
-.filter-wrap {
-  position: relative;
-  display: inline-flex;
-}
-.search-field {
-  display: inline-flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--muted);
-}
-.search-field input[type="search"] {
+.search-input {
   width: min(260px, 48vw);
-  min-width: 160px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--primary);
-  background: #fff;
 }
-.filter-wrap > button.active {
-  border-color: var(--primary);
-  color: var(--primary);
-  background: #ebf8ff;
-}
-.filter-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 20;
-  min-width: 280px;
-  max-width: min(380px, 80vw);
-  max-height: min(480px, 65vh);
-  overflow: auto;
-  padding: 12px 14px;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(26, 54, 93, 0.12);
+.audit-alert {
+  width: min(420px, 100%);
 }
 .filter-panel-head {
   margin-bottom: 8px;
@@ -978,9 +925,6 @@ small {
 .hint {
   font-size: 13px;
 }
-.empty {
-  margin-top: 16px;
-}
 .readme {
   background: #fff;
   border: 1px solid var(--border);
@@ -991,58 +935,14 @@ small {
 }
 .domain {
   margin-top: 20px;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px 16px;
 }
-table.materials-table {
-  width: 100%;
-  table-layout: fixed;
-  border-collapse: collapse;
-  font-size: 14px;
+.drawer-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
 }
-.materials-table .col-pack {
-  width: 34%;
-}
-.materials-table .col-status {
-  width: 14%;
-}
-.materials-table .col-audit {
-  width: 20%;
-}
-.materials-table .col-hint {
-  width: 20%;
-}
-.materials-table .col-action {
-  width: 12%;
-}
-.materials-table th,
-.materials-table td {
-  text-align: left;
-  padding: 8px 6px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-  overflow: hidden;
-}
-.materials-table td.cell-chip {
-  vertical-align: middle;
-}
-.materials-table th.col-action,
-.materials-table td.col-action {
-  text-align: center;
-  vertical-align: middle;
-  white-space: nowrap;
-  overflow: visible;
-}
-.ops-menu-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.action-caret {
-  font-size: 10px;
-  opacity: 0.7;
+.check-row {
+  margin-bottom: 8px;
 }
 .pack-head {
   display: inline-flex;
@@ -1055,10 +955,6 @@ table.materials-table {
   gap: 8px;
   min-width: 0;
 }
-.pack-check {
-  margin-top: 3px;
-  flex-shrink: 0;
-}
 .pack-body {
   min-width: 0;
   flex: 1;
@@ -1066,243 +962,34 @@ table.materials-table {
 .slug-cell {
   display: flex;
   flex-direction: column;
-  flex-wrap: nowrap;
   align-items: flex-start;
   gap: 4px;
   min-width: 0;
-  max-width: 100%;
 }
 .slug-tags {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 4px;
-  min-width: 0;
-  max-width: 100%;
-}
-.domain-tag {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  padding: 0 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-}
-.domain-tag.tone-teal {
-  color: #0f766e;
-  background: #ccfbf1;
-}
-.domain-tag.tone-blue {
-  color: #1d4ed8;
-  background: #dbeafe;
-}
-.domain-tag.tone-green {
-  color: #166534;
-  background: #dcfce7;
-}
-.domain-tag.tone-amber {
-  color: #92400e;
-  background: #fef3c7;
-}
-.domain-tag.tone-rose {
-  color: #9f1239;
-  background: #ffe4e6;
-}
-.domain-tag.tone-slate {
-  color: #334155;
-  background: #e2e8f0;
-}
-.domain-tag.tone-cyan {
-  color: #0e7490;
-  background: #cffafe;
-}
-.domain-tag.tone-orange {
-  color: #c2410c;
-  background: #ffedd5;
-}
-.domain-tag.tone-indigo {
-  color: #3730a3;
-  background: #e0e7ff;
-}
-.domain-tag.tone-lime {
-  color: #3f6212;
-  background: #ecfccb;
 }
 .pack-name {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 13px;
   line-height: 1.35;
   color: var(--primary-dark);
-  min-width: 0;
-  max-width: 100%;
-  white-space: normal;
-  overflow: hidden;
   word-break: break-word;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
 }
 .pack-path {
-  margin-top: 4px;
   font-size: 12px;
-}
-button {
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--primary);
-  border-radius: 8px;
-  padding: 6px 12px;
-  cursor: pointer;
-}
-.drawer-actions {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.check-row {
-  margin-bottom: 8px;
-}
-.hint.err,
-.note.err {
-  color: #c53030;
-}
-.meta-chip {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 0 6px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  border: 1px solid transparent;
-}
-.meta-chip.tone-READY,
-.meta-chip.tone-ok,
-.meta-chip.tone-pass {
-  color: #166534;
-  background: #dcfce7;
-  border-color: #bbf7d0;
-}
-.meta-chip.tone-IN_PROGRESS,
-.meta-chip.tone-progress {
-  color: #1d4ed8;
-  background: #dbeafe;
-  border-color: #bfdbfe;
-}
-.meta-chip.tone-USED,
-.meta-chip.tone-used,
-.meta-chip.tone-neutral,
-.meta-chip.tone-pending {
-  color: #334155;
-  background: #e2e8f0;
-  border-color: #cbd5e1;
-}
-.meta-chip.tone-GATE_FAILED,
-.meta-chip.tone-fail,
-.meta-chip.tone-issue {
-  color: #9f1239;
-  background: #ffe4e6;
-  border-color: #fecdd3;
-}
-.meta-chip.tone-OTHER,
-.meta-chip.tone-warn {
-  color: #9a3412;
-  background: #ffedd5;
-  border-color: #fed7aa;
 }
 .cell-note {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.45;
   color: var(--muted);
-  max-width: 100%;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  overflow: hidden;
-  word-break: break-word;
 }
-.audit-action-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--primary);
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.3;
-  letter-spacing: 0.01em;
+.clickable-tag {
   cursor: pointer;
-}
-.audit-action-btn:hover:not(:disabled) {
-  border-color: var(--primary);
-  background: #ebf8ff;
-}
-.audit-action-btn.busy {
-  border-color: #93c5fd;
-  background: #eff6ff;
-  color: #1d4ed8;
-}
-.audit-action-btn:disabled,
-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-button.primary {
-  background: var(--primary);
-  color: #fff;
-  border-color: var(--primary);
-}
-.review-chip {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 0 6px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  cursor: pointer;
-  background: #e2e8f0;
-  color: #334155;
-}
-.review-chip.tone-pass {
-  color: #166534;
-  background: #dcfce7;
-  border-color: #bbf7d0;
-}
-.review-chip.tone-fail {
-  color: #9f1239;
-  background: #ffe4e6;
-  border-color: #fecdd3;
-}
-.review-chip.tone-warn {
-  color: #9a3412;
-  background: #ffedd5;
-  border-color: #fed7aa;
-}
-.review-chip.tone-pending {
-  color: #334155;
-  background: #e2e8f0;
-  border-color: #cbd5e1;
-}
-.review-chip.tone-running {
-  color: #1d4ed8;
-  background: #dbeafe;
-  border-color: #bfdbfe;
 }
 .review-verdict {
   font-weight: 600;
@@ -1334,39 +1021,5 @@ button.primary {
   padding-left: 18px;
   color: var(--muted);
   font-size: 13px;
-}
-.modal-wide {
-  width: min(640px, 100%);
-  max-height: min(80vh, 720px);
-  overflow: auto;
-}
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(26, 54, 93, 0.35);
-  padding: 16px;
-}
-.modal-card {
-  width: min(420px, 100%);
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px;
-  box-shadow: 0 12px 32px rgba(26, 54, 93, 0.18);
-}
-.modal-card h3 {
-  margin: 0 0 8px;
-  color: var(--primary-dark);
-  font-size: 16px;
-}
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 14px;
 }
 </style>
