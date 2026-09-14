@@ -86,6 +86,13 @@
     <p v-if="auditMessage" class="note" :class="{ err: auditError }">{{ auditMessage }}</p>
     <pre v-if="data.readme" class="readme">{{ data.readme }}</pre>
 
+    <FilterSummaryCard
+      title="当前筛选汇总"
+      unit="包"
+      :total="visiblePackCount"
+      :groups="materialSummaryGroups"
+    />
+
     <div v-for="domain in visibleDomains" :key="domain.domain_key" class="domain">
       <h3>{{ domain.domain }} <small>{{ domain.domain_key }}</small></h3>
       <table class="materials-table">
@@ -226,6 +233,7 @@
 import { computed, onDeactivated, onMounted, onUnmounted, ref, watch, type Directive } from "vue";
 import { NCheckbox, NCheckboxGroup, NDropdown, type DropdownOption } from "naive-ui";
 import { apiGet, apiPost, apiPut, domainTagTone, docKindPresentation, docKindSearchText, matchesMaterialQuery } from "../api";
+import FilterSummaryCard, { type SummaryGroup } from "../components/FilterSummaryCard.vue";
 
 const props = defineProps<{ initialPrefs?: any }>();
 const emit = defineEmits(["prefsSaved"]);
@@ -404,6 +412,54 @@ const visibleDomains = computed(() => {
 const visiblePackCount = computed(() =>
   visibleDomains.value.reduce((n: number, d: any) => n + (d.packs?.length || 0), 0)
 );
+
+const materialSummaryGroups = computed<SummaryGroup[]>(() => {
+  const domainItems: SummaryGroup["items"] = visibleDomains.value.map((d: any) => ({
+    key: String(d.domain_key || ""),
+    count: (d.packs || []).length,
+    domainKey: String(d.domain_key || ""),
+    domainLabel: String(d.domain || d.domain_key || "—"),
+  }));
+  const statusMap = new Map<string, number>();
+  const auditMap = new Map<string, number>();
+  for (const domain of visibleDomains.value) {
+    for (const pack of domain.packs || []) {
+      const st = materialStatusPresentation(pack.status);
+      statusMap.set(st.bucket, (statusMap.get(st.bucket) || 0) + 1);
+      const audit = auditFilterBucket(pack.llm_audit);
+      auditMap.set(audit, (auditMap.get(audit) || 0) + 1);
+    }
+  }
+  const statusItems = MATERIAL_STATUS_OPTIONS.flatMap((opt) => {
+    const count = statusMap.get(opt.value) || 0;
+    if (!count) return [];
+    const pres = materialStatusPresentation(opt.value);
+    return [
+      {
+        key: opt.value,
+        count,
+        label: pres.label,
+        chipTone: pres.bucket,
+      },
+    ];
+  });
+  const auditLabel: Record<string, { label: string; tone: string }> = {
+    pass: { label: "审核通过", tone: "pass" },
+    fail: { label: "审核未通过", tone: "fail" },
+    none: { label: "未审核", tone: "pending" },
+  };
+  const auditItems = MATERIAL_AUDIT_OPTIONS.flatMap((opt) => {
+    const count = auditMap.get(opt.value) || 0;
+    if (!count) return [];
+    const meta = auditLabel[opt.value];
+    return [{ key: opt.value, count, label: meta.label, chipTone: meta.tone }];
+  });
+  return [
+    { name: "领域", items: domainItems },
+    { name: "状态", items: statusItems },
+    { name: "审核", items: auditItems },
+  ];
+});
 
 function packPath(pack: any): string {
   return String(pack?.path || `${pack?.domain_key || ""}::${pack?.pack || ""}`);

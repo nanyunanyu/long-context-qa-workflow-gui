@@ -59,6 +59,7 @@ class BatchBind:
         "RUNS_ROOT",
         "FAILED_ROOT",
         "PENDING_REVIEW_ROOT",
+        "BORDERLINE_50_ROOT",
         "run",
         "produce",
     )
@@ -77,6 +78,7 @@ class BatchBind:
         batch_run.RUNS_ROOT = self.workspace / "archive" / "runs"
         batch_run.FAILED_ROOT = self.workspace / "archive" / "failed-samples"
         batch_run.PENDING_REVIEW_ROOT = self.workspace / "archive" / "pending-review"
+        batch_run.BORDERLINE_50_ROOT = self.workspace / "archive" / "borderline-50pct"
         batch_run.run = lambda cmd, env=None, timeout=None: popen_run(cmd, self.workspace, env=env, timeout=timeout)
         batch_run.produce = lambda *args, **kwargs: produce_step(self.workspace, *args, **kwargs)
         return batch_run
@@ -484,6 +486,9 @@ def run_one_controlled(
         if "passed" in statuses:
             result["status"] = "passed"
             queue_result = "passed"
+        elif "borderline_50" in statuses:
+            result["status"] = "borderline_50"
+            queue_result = "borderline_50"
         elif "manual_review" in statuses:
             result["status"] = "manual_review"
             queue_result = "blocked"
@@ -1000,7 +1005,7 @@ def run_review_pass(
 
         mapped = gate_decision(avg)
         if mapped != "ablation":
-            raise ValueError(f"rescored pass requires avg_accuracy in (0, 0.5], got {avg} ({mapped})")
+            raise ValueError(f"rescored pass requires avg_accuracy in (0, 0.5), got {avg} ({mapped})")
 
     index = int(cand.get("candidate_index") or int(str(cand.get("candidate_id") or "candidate-01").rsplit("-", 1)[-1]))
     attempt = int(cand.get("attempt") or 1)

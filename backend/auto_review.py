@@ -14,6 +14,7 @@ from .queue_ops import (
     can_review_pass,
     find_manual_review_candidate,
     find_pending_delivery_dir,
+    hold_borderline_50,
     human_reject_passed,
     patch_task,
     read_queue,
@@ -458,11 +459,17 @@ def run_auto_review(
             mapped = gate_decision(rescored_avg)
             if mapped == "ablation":
                 action = "rescored"
+            elif mapped == "borderline_50":
+                action = "borderline_50"
+                parsed["reason"] = (
+                    f"{parsed['reason']} 假阴性改判后 avg_accuracy={rescored_avg:.3f}，"
+                    "恰好 4/8，进临界归档（不算通过，不入 failed-samples）。"
+                )
             elif mapped in {"reject_too_easy", "reject_perfect"}:
                 action = "rejected"
                 parsed["reason"] = (
                     f"{parsed['reason']} 假阴性改判后 avg_accuracy={rescored_avg:.3f}，"
-                    "已超出 (0, 0.5] 门禁。"
+                    "已超出 (0, 0.5) 门禁。"
                 )
             else:
                 action = "rejected"
@@ -499,6 +506,13 @@ def run_auto_review(
                     source_type=source_type,
                     require_zero=False,
                     zero_rechecked=False,
+                )
+            elif action == "borderline_50":
+                follow = hold_borderline_50(
+                    workspace,
+                    task_id=task_id,
+                    avg=float(rescored_avg) if rescored_avg is not None else 0.5,
+                    reason=f"auto-review: {parsed['reason']}",
                 )
             else:
                 follow = human_reject_passed(

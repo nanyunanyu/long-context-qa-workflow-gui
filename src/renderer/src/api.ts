@@ -38,6 +38,7 @@ export function apiPut(path: string, body: unknown = {}) {
 export type TaskVisualState =
   | "passed"
   | "gate_failed"
+  | "borderline_50"
   | "cancelled"
   | "manual_review"
   | "blocked"
@@ -53,12 +54,13 @@ export const QUEUE_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "queued", label: "排队" },
   { value: "blocked", label: "复检" },
   { value: "cancelled", label: "已取消" },
+  { value: "borderline_50", label: "临界 4/8" },
   { value: "gate_failed", label: "门禁失败" },
 ];
 
 export const ALL_QUEUE_STATUSES = QUEUE_STATUS_OPTIONS.map((o) => o.value);
 
-/** Board list group order: 通过 → 进行中 → 排队 → 复检 → 取消 → 门禁失败 */
+/** Board list group order: 通过 → 进行中 → 排队 → 复检 → 取消 → 临界 4/8 → 门禁失败 */
 export const BOARD_STATUS_RANK: Record<string, number> = {
   passed: 0,
   claimed: 1,
@@ -66,7 +68,8 @@ export const BOARD_STATUS_RANK: Record<string, number> = {
   queued: 2,
   blocked: 3,
   cancelled: 4,
-  gate_failed: 5,
+  borderline_50: 5,
+  gate_failed: 6,
 };
 
 export function boardStatusRank(task: any): number {
@@ -291,6 +294,7 @@ export function taskVisualState(task: any, progress: any): TaskVisualState {
   const status = String(task?.status || "");
   const review = String(task?.review_status || "");
   if (status === "passed") return "passed";
+  if (status === "borderline_50") return "borderline_50";
   if (status === "gate_failed") {
     if (review === "human_reject") return "gate_failed"; // same icon; label via passVisual
     return "gate_failed";
@@ -308,6 +312,55 @@ export function taskVisualState(task: any, progress: any): TaskVisualState {
   return "unknown";
 }
 
+/** Display order for board summary chips (matches 状态 column grouping). */
+export const BOARD_VISUAL_ORDER: TaskVisualState[] = [
+  "passed",
+  "running",
+  "paused",
+  "queued",
+  "manual_review",
+  "blocked",
+  "cancelled",
+  "borderline_50",
+  "gate_failed",
+  "unknown",
+];
+
+export function countByVisualStatus(
+  tasks: any[],
+  progress: any
+): { state: TaskVisualState; count: number }[] {
+  const map = new Map<TaskVisualState, number>();
+  for (const task of tasks) {
+    const state = taskVisualState(task, progress);
+    map.set(state, (map.get(state) || 0) + 1);
+  }
+  const rows: { state: TaskVisualState; count: number }[] = [];
+  const seen = new Set<string>();
+  for (const state of BOARD_VISUAL_ORDER) {
+    const count = map.get(state);
+    if (count) {
+      rows.push({ state, count });
+      seen.add(state);
+    }
+  }
+  for (const [state, count] of map) {
+    if (!seen.has(state)) rows.push({ state, count });
+  }
+  return rows;
+}
+
+export function countByDomain(tasks: any[]): { key: string; label: string; count: number }[] {
+  const map = new Map<string, { key: string; label: string; count: number }>();
+  for (const task of tasks) {
+    const parts = taskSlugParts(task);
+    const cur = map.get(parts.domainKey);
+    if (cur) cur.count += 1;
+    else map.set(parts.domainKey, { key: parts.domainKey, label: parts.domainLabel, count: 1 });
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "zh"));
+}
+
 export function queueStatusLabel(status: string, task?: any): string {
   if (task && String(task.status) === "gate_failed" && String(task.review_status || "") === "human_reject") {
     return "复检打回";
@@ -317,6 +370,7 @@ export function queueStatusLabel(status: string, task?: any): string {
 
 export function passVisualState(task: any): TaskVisualState | "pending" {
   if (task.status === "passed") return "passed";
+  if (task.status === "borderline_50") return "borderline_50";
   if (task.status === "gate_failed") {
     if (String(task.review_status || "") === "human_reject") return "gate_failed";
     return "gate_failed";
@@ -381,6 +435,7 @@ export function passColumnLabel(task: any): string {
     const rate = formatAccuracyRate(taskAvgAccuracy(task));
     return rate || "通过";
   }
+  if (state === "borderline_50") return "恰好 4/8";
   if (state === "pending") return "—";
   if (state === "cancelled") return "已取消";
   if (state === "manual_review") return "复验 0/8";
@@ -392,11 +447,19 @@ export function passColumnLabel(task: any): string {
   const avg = taskAvgAccuracy(task);
   const avgTxt = formatAvg(avg);
 
-  if (review === "manual_review" || reason.includes("avg_accuracy == 0") || reason.includes("requires human")) {
+  if (review === "manual_review" || reason.includes("avg_accuracy == 0.0") || reason.includes("requires human")) {
     return "复验 0/8";
   }
   if (reason.includes("human reject") || reason.includes("human_reject")) {
     return "复检打回";
+  }
+  if (
+    reason.includes("avg_accuracy == 0.5") ||
+    reason.includes("borderline_50") ||
+    reason.includes("exactly 4/8") ||
+    (avg != null && avg === 0.5)
+  ) {
+    return "恰好 4/8";
   }
   if (
     reason.includes("avg_accuracy == 1") ||
@@ -463,6 +526,7 @@ export function formatEndedAt(task: any): string {
 
 function terminalStageLabel(task: any): string {
   if (task.status === "passed") return "结束 · 通过";
+  if (task.status === "borderline_50") return "结束 · 临界 4/8";
   if (task.status === "gate_failed" && task.review_status === "human_reject") return "结束 · 复检打回";
   if (task.status === "gate_failed") return "结束 · 门禁失败";
   if (task.status === "blocked") return "结束 · 未通过/待处理";
@@ -473,7 +537,7 @@ function terminalStageLabel(task: any): string {
 }
 
 export function stageLabel(task: any, progress: any): string {
-  const terminal = ["passed", "gate_failed", "blocked", "cancelled"].includes(String(task?.status || ""));
+  const terminal = ["passed", "gate_failed", "borderline_50", "blocked", "cancelled"].includes(String(task?.status || ""));
   if (terminal) return terminalStageLabel(task);
 
   const row = progressRow(task, progress);
@@ -502,7 +566,7 @@ export type StepTone = "done" | "active" | "todo" | "error" | "idle";
 export function pipelineStepTones(task: any, progress: any): { step: string; label: string; tone: StepTone }[] {
   const row = progressRow(task, progress);
   const status = String(task?.status || "");
-  const terminalFail = ["gate_failed", "blocked", "cancelled"].includes(status);
+  const terminalFail = ["gate_failed", "borderline_50", "blocked", "cancelled"].includes(status);
   const terminalPass = status === "passed";
   const done = new Set<string>(Array.isArray(row?.done_steps) ? row.done_steps.map(String) : []);
   const current = row ? String(row.step || "") : "";

@@ -33,6 +33,21 @@ function codeRoot(): string {
   return join(desktopRoot, "..");
 }
 
+function resolveApiServer(): string {
+  const appPath = app.getAppPath();
+  const repo = codeRoot();
+  const candidates = [
+    join(appPath, "backend", "server.py"),
+    join(repo, "long-context-qa-gui", "backend", "server.py"),
+    join(repo, "desktop", "backend", "server.py"),
+  ];
+  const server = candidates.find((p) => existsSync(p));
+  if (!server) {
+    throw new Error(`找不到 backend/server.py（已试：${candidates.join("；")}）`);
+  }
+  return server;
+}
+
 function listenerPids(port: number): number[] {
   if (process.platform === "win32") return [];
   try {
@@ -73,7 +88,7 @@ async function stopStaleApi(): Promise<void> {
 
 function startApi(): void {
   const root = codeRoot();
-  const server = join(root, "desktop", "backend", "server.py");
+  const server = resolveApiServer();
   apiProc = spawn("python3", [server, "--host", "127.0.0.1", "--port", String(API_PORT)], {
     cwd: root,
     env: { ...process.env, LCQA_CODE_ROOT: root },
@@ -143,8 +158,8 @@ app.whenReady().then(async () => {
     if (!image.isEmpty()) app.dock.setIcon(image);
   }
   await stopStaleApi();
-  startApi();
   try {
+    startApi();
     await waitForApi();
   } catch (err) {
     dialog.showErrorBox("启动失败", String(err));

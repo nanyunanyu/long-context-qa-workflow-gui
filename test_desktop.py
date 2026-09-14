@@ -12,8 +12,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
+DESKTOP_ROOT = Path(__file__).resolve().parent
 if str(CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(CODE_ROOT))
+if str(DESKTOP_ROOT) not in sys.path:
+    sys.path.insert(0, str(DESKTOP_ROOT))
+if "desktop" not in sys.modules and not ((CODE_ROOT / "desktop" / "backend").is_dir()):
+    import types as _types
+
+    _pkg = _types.ModuleType("desktop")
+    _pkg.__file__ = str(DESKTOP_ROOT / "__init__.py")
+    _pkg.__path__ = [str(DESKTOP_ROOT)]  # type: ignore[attr-defined]
+    _pkg.__package__ = "desktop"
+    sys.modules["desktop"] = _pkg
 
 from desktop.backend.run_control import request_soft_stop, validate_batch_bounds  # noqa: E402
 from desktop.backend.scaffold import ensure_workspace, inspect_workspace  # noqa: E402
@@ -123,6 +134,7 @@ class DesktopScaffoldTests(unittest.TestCase):
             self.assertTrue((root / "workflow" / "batch_run.py").is_file())
             self.assertTrue((root / "queue" / "queue.json").is_file())
             self.assertTrue((root / "archive" / "pending-review").is_dir())
+            self.assertTrue((root / "archive" / "borderline-50pct").is_dir())
             self.assertIn("file_md", (root / "materials" / "README.md").read_text(encoding="utf-8"))
             again = ensure_workspace(root)
             self.assertFalse(again.get("copied_pipeline"))
@@ -1056,6 +1068,8 @@ class BoardOpsTests(unittest.TestCase):
         self.assertFalse(can_requeue({"status": "gate_failed", "avg_accuracy": 0.75}))
         self.assertFalse(can_cancel({"status": "gate_failed", "avg_accuracy": 1.0}))
         self.assertFalse(can_requeue({"status": "passed", "avg_accuracy": 0.375}))
+        self.assertFalse(can_requeue({"status": "borderline_50", "avg_accuracy": 0.5}))
+        self.assertFalse(can_cancel({"status": "borderline_50", "avg_accuracy": 0.5}))
 
     def test_can_start_queued_only(self):
         from desktop.backend.queue_ops import can_start
@@ -1162,12 +1176,23 @@ class BoardOpsTests(unittest.TestCase):
                 }
             )
         )
+        self.assertFalse(
+            can_review_pass(
+                {
+                    "status": "borderline_50",
+                    "review_status": "borderline_50",
+                    "avg_accuracy": 0.5,
+                    "candidate_results": [{"status": "borderline_50", "avg_accuracy": 0.5}],
+                }
+            )
+        )
 
     def test_can_human_reject_and_revoke_delivery(self):
         from desktop.backend.queue_ops import can_human_reject, can_requeue, human_reject_passed
 
         self.assertTrue(can_human_reject({"status": "passed"}))
         self.assertFalse(can_human_reject({"status": "gate_failed"}))
+        self.assertFalse(can_human_reject({"status": "borderline_50", "avg_accuracy": 0.5}))
         self.assertTrue(
             can_human_reject(
                 {
@@ -1722,6 +1747,39 @@ class AutoReviewTests(unittest.TestCase):
             self.assertFalse(held.exists())
             task = json.loads((root / "queue" / "queue.json").read_text(encoding="utf-8"))["tasks"][0]
             self.assertEqual(task["status"], "gate_failed")
+
+    def test_auto_review_false_negatives_at_50_goes_borderline(self) -> None:
+        from desktop.backend import auto_review as auto_review_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            held = _write_pending_review_task(root)
+            with patch.object(auto_review_mod, "load_keys"), patch.object(
+                auto_review_mod,
+                "chat_json",
+                return_value={
+                    "verdict": "pass",
+                    "gold_supported": True,
+                    "question_ok": True,
+                    "false_negative_rollouts": [f"rollout_0{i}" for i in range(1, 5)],
+                    "rescored_correct_count": 4,
+                    "reason": "四条实质已答对",
+                },
+            ), patch.object(auto_review_mod, "run_review_pass") as promote, patch.object(
+                auto_review_mod, "human_reject_passed"
+            ) as reject:
+                result = auto_review_mod.run_auto_review(root, "t-zero")
+            promote.assert_not_called()
+            reject.assert_not_called()
+            self.assertEqual(result["auto_review"]["action"], "borderline_50")
+            self.assertEqual(result["auto_review"]["rescored_avg_accuracy"], 0.5)
+            self.assertFalse(held.exists())
+            dest = root / "archive" / "borderline-50pct" / "042-demo-c01"
+            self.assertTrue((dest / "BORDERLINE_50.md").is_file())
+            self.assertFalse((root / "archive" / "failed-samples" / "042-demo-c01").exists())
+            task = json.loads((root / "queue" / "queue.json").read_text(encoding="utf-8"))["tasks"][0]
+            self.assertEqual(task["status"], "borderline_50")
+            self.assertEqual(task["avg_accuracy"], 0.5)
 
     def test_normalize_rollout_ids_and_rescore(self) -> None:
         from desktop.backend.auto_review import apply_false_negative_rescore, normalize_rollout_ids
