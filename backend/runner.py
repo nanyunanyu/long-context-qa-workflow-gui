@@ -33,6 +33,7 @@ from .run_control import (
     mark_running,
     raise_if_paused,
     register_child,
+    request_soft_stop,
     should_interrupt,
     should_pause,
     unregister_child,
@@ -46,6 +47,48 @@ if str(_CODE) not in sys.path:
     sys.path.insert(0, str(_CODE))
 
 from workflow import batch_run  # noqa: E402
+
+FATAL_QUOTA_MESSAGE = "OpenAI 额度耗尽，已停止本批。请充值后再续跑技术失败。"
+_FATAL_QUOTA_MARKERS = (
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "billing_hard_limit_reached",
+    "you have no credits remaining",
+    "exceeded your current quota",
+    "billing hard limit has been reached",
+    "credit balance is too low",
+)
+
+
+def is_fatal_quota_error(text: str | None) -> bool:
+    """True for billing/quota exhaustion, not transient 429 rate limits."""
+    blob = str(text or "").lower()
+    return any(marker in blob for marker in _FATAL_QUOTA_MARKERS)
+
+
+def result_failure_text(row: dict[str, Any] | None) -> str:
+    if not isinstance(row, dict):
+        return ""
+    parts: list[str] = []
+    for key in ("error", "failure_reason", "traceback", "detail"):
+        value = row.get(key)
+        if value:
+            parts.append(str(value))
+    for candidate in row.get("candidates") or []:
+        if isinstance(candidate, dict):
+            nested = result_failure_text(candidate)
+            if nested:
+                parts.append(nested)
+    return "\n".join(parts)
+
+
+def is_fatal_quota_result(row: dict[str, Any] | None) -> bool:
+    return is_fatal_quota_error(result_failure_text(row))
+
+
+def request_quota_stop(workspace: Path) -> None:
+    request_soft_stop(workspace, message=FATAL_QUOTA_MESSAGE)
+    emit_event(workspace, step="quota", status="error", detail=FATAL_QUOTA_MESSAGE)
 
 
 class BatchBind:
@@ -395,6 +438,9 @@ def _produce_once(
     )
     final_detail = current_detail() or detail
     if proc.returncode:
+        blob = f"{proc.stderr or ''}\n{proc.stdout or ''}"
+        if is_fatal_quota_error(blob):
+            request_quota_stop(workspace)
         emit_event(
             workspace,
             step=step,
@@ -500,6 +546,8 @@ def run_one_controlled(
             queue_result = "gate_failed"
         result["provider"] = provider
         result["review_status"] = result["status"]
+        if is_fatal_quota_result(result):
+            request_quota_stop(workspace)
         summary_path = batch_run.resolved(task["sample_dir"]) / "work" / "candidate_results.json"
         batch_run.write_json(summary_path, result)
         emit_event(workspace, step="complete", status="finished", task_id=task["id"], slug=task["slug"], detail=result["status"])
@@ -528,6 +576,8 @@ def run_one_controlled(
     except Exception as exc:
         result["error"] = str(exc)
         result["traceback"] = traceback.format_exc()[-3000:]
+        if is_fatal_quota_error(str(exc)):
+            request_quota_stop(workspace)
         try:
             qw_json(workspace, ["complete", "--task-id", task["id"], "--result", "blocked", "--by", worker])
         except Exception:
@@ -789,18 +839,24 @@ def produce_batch(
             )
             with results_lock:
                 results.append(row)
+            if is_fatal_quota_result(row):
+                request_quota_stop(workspace)
 
     n_workers = max(1, min(workers, limit))
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
         futures = [pool.submit(worker, i) for i in range(n_workers)]
         for future in as_completed(futures):
             future.result()
+    quota_hit = any(is_fatal_quota_result(row) for row in results)
+    if quota_hit:
+        request_quota_stop(workspace)
     summary = {
         "finished_at": utcnow(),
         "provider": provider,
         "workers": n_workers,
         "claimed": claimed_count,
         "paused": should_pause(workspace),
+        "stop_reason": "openai_quota_exhausted" if quota_hit else None,
         "passed_tasks": sum(row.get("status") == "passed" for row in results),
         "results": results,
     }
@@ -906,6 +962,8 @@ def run_pipeline(
 
 
 def current_status_message(workspace: Path, summary: dict[str, Any]) -> str:
+    if summary.get("stop_reason") == "openai_quota_exhausted":
+        return FATAL_QUOTA_MESSAGE
     if summary.get("paused"):
         return "paused"
     return f"claimed={summary.get('claimed')} passed={summary.get('passed_tasks')}"

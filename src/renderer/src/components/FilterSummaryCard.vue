@@ -31,6 +31,17 @@
             <span class="summary-label">{{ group.name }}</span>
             <div class="summary-pills">
               <span v-for="item in group.items" :key="item.key" class="summary-pill">
+                <template v-for="sel in [chipSelectState(item)]" :key="item.key + '-sel'">
+                  <el-checkbox
+                    v-if="sel"
+                    size="small"
+                    :model-value="sel.checked"
+                    :indeterminate="sel.indeterminate"
+                    :disabled="sel.disabled"
+                    @change="onChipChange(item, $event)"
+                    @click.stop
+                  />
+                </template>
                 <StatusIcon v-if="item.state" :state="item.state" />
                 <el-tag
                   v-else-if="item.domainKey"
@@ -83,15 +94,35 @@ export type SummaryGroup = {
   items: SummaryChip[];
 };
 
+export type SummaryChipSelectState = {
+  checked: boolean;
+  indeterminate: boolean;
+  disabled: boolean;
+};
+
 const props = withDefaults(
   defineProps<{
     title?: string;
     total: number;
     unit?: string;
     groups: SummaryGroup[];
+    itemSelectStates?: Record<string, SummaryChipSelectState>;
   }>(),
   { title: "当前筛选汇总", unit: "条" }
 );
+
+const emit = defineEmits<{
+  toggleItem: [item: SummaryChip, checked: boolean];
+}>();
+
+function chipSelectState(item: SummaryChip): SummaryChipSelectState | null {
+  if (!item.state) return null;
+  return props.itemSelectStates?.[item.key] ?? null;
+}
+
+function onChipChange(item: SummaryChip, checked: string | number | boolean) {
+  emit("toggleItem", item, Boolean(checked));
+}
 
 const expanded = ref(true);
 const selectedNames = ref<string[]>([]);
@@ -195,5 +226,13 @@ const visibleGroups = computed(() => {
   width: 14px;
   height: 16px;
   flex-basis: 14px;
+}
+.summary-pill :deep(.el-checkbox) {
+  height: auto;
+  margin-right: 0;
+  --el-checkbox-height: 14px;
+}
+.summary-pill :deep(.el-checkbox__label) {
+  display: none;
 }
 </style>

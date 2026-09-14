@@ -38,6 +38,15 @@
       <p class="muted rule-hint">{{ questionTypeHint }}</p>
     </el-card>
 
+    <el-alert
+      v-if="runStopAlert"
+      class="run-stop-alert"
+      :type="runStopAlert.type"
+      show-icon
+      :closable="false"
+      :title="runStopAlert.title"
+    />
+
     <el-card class="card" shadow="never">
       <div class="mode-bar">
         <h2>材料来源</h2>
@@ -225,10 +234,6 @@
             <el-button v-if="dateFrom || dateTo" type="primary" link @click="clearDateFilter">清空日期</el-button>
           </div>
           <div class="status-actions">
-            <el-button :disabled="running || !selectableFiltered.length" @click="selectAllFiltered">
-              全选当前筛选
-            </el-button>
-            <el-button :disabled="!selectedTaskIds.length" @click="clearTaskSelection">清空选择</el-button>
             <span v-if="selectedTaskIds.length" class="hint">已选 {{ selectedTaskIds.length }}</span>
             <el-dropdown trigger="click" :disabled="batchMenuDisabled" @command="onBatchActionSelect">
               <el-button :disabled="batchMenuDisabled">
@@ -258,12 +263,15 @@
         unit="条"
         :total="filteredTasks.length"
         :groups="boardSummaryGroups"
+        :item-select-states="statusChipSelectStates"
+        @toggle-item="onStatusChipToggle"
       />
       <el-table :data="filteredTasks" class="board-table" size="small" row-key="id">
         <el-table-column width="48">
           <template #header>
             <el-checkbox
               :model-value="allFilteredSelected"
+              :indeterminate="someFilteredSelected && !allFilteredSelected"
               :disabled="running || !selectableFiltered.length"
               @change="toggleSelectAllFiltered"
             />
@@ -525,7 +533,11 @@ import {
   taskVisualState,
 } from "../api";
 import { chipTagType, confirmAction, toastError, toastWarning, type MenuAction } from "../ui";
-import FilterSummaryCard, { type SummaryGroup } from "../components/FilterSummaryCard.vue";
+import FilterSummaryCard, {
+  type SummaryChip,
+  type SummaryChipSelectState,
+  type SummaryGroup,
+} from "../components/FilterSummaryCard.vue";
 import StatusIcon from "../components/StatusIcon.vue";
 import StageProgress from "../components/StageProgress.vue";
 
@@ -791,8 +803,59 @@ const allFilteredSelected = computed(
     selectableFiltered.value.length > 0 &&
     selectableFiltered.value.every((t: any) => selectedTaskSet.value.has(t.id))
 );
+const someFilteredSelected = computed(() =>
+  selectableFiltered.value.some((t: any) => selectedTaskSet.value.has(t.id))
+);
 const runStatus = computed(() => props.snapshot?.run?.status || "idle");
 const running = computed(() => ["running", "stopping"].includes(runStatus.value));
+
+function selectableFilteredByVisual(state: string) {
+  return selectableFiltered.value.filter((t: any) => taskVisualState(t, props.snapshot) === state);
+}
+
+function statusChipSelectState(item: SummaryChip): SummaryChipSelectState | null {
+  if (!item.state) return null;
+  const rows = selectableFilteredByVisual(item.state);
+  const selectedCount = rows.filter((t: any) => selectedTaskSet.value.has(t.id)).length;
+  return {
+    checked: rows.length > 0 && selectedCount === rows.length,
+    indeterminate: selectedCount > 0 && selectedCount < rows.length,
+    disabled: running.value || !rows.length,
+  };
+}
+
+function onStatusChipToggle(item: SummaryChip, checked: boolean) {
+  if (!item.state) return;
+  const ids = selectableFilteredByVisual(item.state).map((t: any) => t.id);
+  if (!ids.length) return;
+  const set = new Set(selectedTaskIds.value);
+  if (checked) {
+    for (const id of ids) set.add(id);
+  } else {
+    for (const id of ids) set.delete(id);
+  }
+  selectedTaskIds.value = [...set];
+}
+
+const statusChipSelectStates = computed<Record<string, SummaryChipSelectState>>(() => {
+  const map: Record<string, SummaryChipSelectState> = {};
+  for (const group of boardSummaryGroups.value) {
+    for (const item of group.items) {
+      const st = statusChipSelectState(item);
+      if (st) map[item.key] = st;
+    }
+  }
+  return map;
+});
+
+const runStopAlert = computed(() => {
+  const msg = String(props.snapshot?.run?.message || "").trim();
+  if (!msg) return null;
+  if (msg.includes("额度耗尽") || /insufficient_quota|credit_balance_exhausted/i.test(msg)) {
+    return { type: "error" as const, title: msg };
+  }
+  return null;
+});
 const reviewReady = computed(() => Boolean(props.snapshot?.keys?.review_ready ?? props.snapshot?.keys?.review));
 const batchMenuDisabled = computed(
   () =>
@@ -1250,10 +1313,6 @@ function selectAllFiltered() {
   selectedTaskIds.value = [...set];
 }
 
-function clearTaskSelection() {
-  selectedTaskIds.value = [];
-}
-
 function toggleSelectAllFiltered(checked: string | number | boolean) {
   if (checked) selectAllFiltered();
   else {
@@ -1702,6 +1761,9 @@ onUnmounted(() => persistBoardFilters(true));
 <style scoped>
 .controls-card,
 .card {
+  margin-bottom: 16px;
+}
+.run-stop-alert {
   margin-bottom: 16px;
 }
 .controls {

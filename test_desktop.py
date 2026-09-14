@@ -80,6 +80,55 @@ def _context() -> str:
     )
 
 
+def _enqueue_fixture_tasks(root: Path, slugs: tuple[str, ...]) -> None:
+    domain_cat = root / "materials" / "example" / "CATALOG.json"
+    packs = json.loads(domain_cat.read_text(encoding="utf-8"))
+    for i, slug in enumerate(slugs):
+        pack_name = "sample-pack" if i == 0 else f"sample-pack-{slug}"
+        pack_path = f"materials/example/{pack_name}"
+        if i > 0:
+            packs["packs"].append(
+                {
+                    "pack": pack_name,
+                    "path": pack_path,
+                    "coldness": "cold",
+                    "status": "READY",
+                }
+            )
+            pack_dir = root / "materials" / "example" / pack_name
+            pack_dir.mkdir(parents=True)
+            (pack_dir / "CATALOG.json").write_text(
+                json.dumps({"pack": pack_name, "status": "READY", "docs": []}, ensure_ascii=False, indent=2)
+                + "\n",
+                encoding="utf-8",
+            )
+            domain_cat.write_text(json.dumps(packs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        staging = root / "data" / "staging" / slug
+        staging.mkdir(parents=True)
+        (staging / "context.txt").write_text(_context(), encoding="utf-8")
+        (staging / "context.md").write_text(_context(), encoding="utf-8")
+        _write_json(staging / "sources.json", {"domain": "test", "docs": [{"doc_id": "D01"}, {"doc_id": "D02"}]})
+        _write_json(staging / "meta.json", {"slug": slug, "domain": "example", "materials_pack": pack_path})
+        qw_json(
+            root,
+            [
+                "enqueue",
+                "--slug",
+                slug,
+                "--domain",
+                "example",
+                "--staging",
+                f"data/staging/{slug}",
+                "--materials-pack",
+                pack_path,
+                "--provider-mode",
+                "fixture",
+                "--include-used",
+            ],
+        )
+    domain_cat.write_text(json.dumps(packs, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -239,6 +288,97 @@ class DesktopRunControlTests(unittest.TestCase):
         self.assertEqual(desktop_runner.claim_limit_for_run(9, 0), 9)
         self.assertEqual(desktop_runner.claim_limit_for_run(9, 10), 10)
         self.assertEqual(desktop_runner.claim_limit_for_run(9, 1), 9)
+
+    def test_fatal_quota_error_detection(self) -> None:
+        self.assertTrue(
+            desktop_runner.is_fatal_quota_error(
+                "RateLimitError: Error code: 429 - {'error': {'type': 'insufficient_quota', "
+                "'code': 'credit_balance_exhausted', 'message': 'You have no credits remaining.'}}"
+            )
+        )
+        self.assertFalse(
+            desktop_runner.is_fatal_quota_error(
+                "RateLimitError: Error code: 429 - {'error': {'type': 'rate_limit_exceeded', "
+                "'code': 'rate_limit_exceeded'}}"
+            )
+        )
+        self.assertFalse(desktop_runner.is_fatal_quota_error("connection reset by peer"))
+
+    def test_quota_error_stops_claiming_remaining_queued(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "ws"
+            root.mkdir()
+            ensure_workspace(root)
+            fixture = root / "fixtures"
+            _make_fixture(fixture, correct_count=2)
+            _enqueue_fixture_tasks(root, ("demo-a", "demo-b", "demo-c"))
+            quota_reason = (
+                "technical failure in attempt 1: RuntimeError: produce_one generate failed (1):\n"
+                "gpt-5.6-luna Responses API failed: RateLimitError: Error code: 429 - "
+                "{'error': {'message': 'You have no credits remaining.', "
+                "'type': 'insufficient_quota', 'code': 'credit_balance_exhausted'}}"
+            )
+
+            def fake_run_candidate(*_args, **_kwargs):
+                return {
+                    "status": "technical_failed",
+                    "failure_reason": quota_reason,
+                    "review_status": "technical_failed",
+                }
+
+            with desktop_runner.BatchBind(root):
+                with patch.object(desktop_runner.batch_run, "run_candidate", side_effect=fake_run_candidate):
+                    summary = produce_batch(
+                        root,
+                        limit=3,
+                        workers=1,
+                        provider="fixture",
+                        fixture_root=fixture,
+                    )
+            self.assertTrue(summary["paused"])
+            self.assertEqual(summary["claimed"], 1)
+            self.assertEqual(summary.get("stop_reason"), "openai_quota_exhausted")
+            self.assertEqual(
+                desktop_runner.current_status_message(root, summary),
+                desktop_runner.FATAL_QUOTA_MESSAGE,
+            )
+            queue = json.loads((root / "queue" / "queue.json").read_text(encoding="utf-8"))
+            statuses = [t["status"] for t in queue["tasks"]]
+            self.assertEqual(statuses.count("blocked"), 1)
+            self.assertEqual(statuses.count("queued"), 2)
+
+    def test_non_quota_technical_failure_does_not_stop_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "ws"
+            root.mkdir()
+            ensure_workspace(root)
+            fixture = root / "fixtures"
+            _make_fixture(fixture, correct_count=2)
+            _enqueue_fixture_tasks(root, ("demo-a", "demo-b"))
+
+            def fake_run_candidate(*_args, **_kwargs):
+                return {
+                    "status": "technical_failed",
+                    "failure_reason": "technical failure in attempt 1: RuntimeError: connection reset by peer",
+                    "review_status": "technical_failed",
+                }
+
+            with desktop_runner.BatchBind(root):
+                with patch.object(desktop_runner.batch_run, "run_candidate", side_effect=fake_run_candidate):
+                    summary = produce_batch(
+                        root,
+                        limit=2,
+                        workers=1,
+                        provider="fixture",
+                        fixture_root=fixture,
+                    )
+            self.assertFalse(summary["paused"])
+            self.assertEqual(summary["claimed"], 2)
+            self.assertIsNone(summary.get("stop_reason"))
+            queue = json.loads((root / "queue" / "queue.json").read_text(encoding="utf-8"))
+            statuses = [t["status"] for t in queue["tasks"]]
+            self.assertEqual(statuses.count("blocked"), 2)
+            self.assertEqual(statuses.count("queued"), 0)
 
     def test_run_pipeline_does_not_leave_queued_when_limit_below_queue(self) -> None:
         """Previous leftover 排队 plus this batch must all be claimed, not left behind."""

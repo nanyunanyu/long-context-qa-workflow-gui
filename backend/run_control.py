@@ -155,12 +155,16 @@ def mark_idle(root: Path, message: str | None = None) -> dict[str, Any]:
     return update_state(root, status="idle", runner_pid=None, child_pids=[], message=message)
 
 
-def request_soft_stop(root: Path) -> dict[str, Any]:
+def request_soft_stop(root: Path, message: str | None = None) -> dict[str, Any]:
     with ControlLock(root):
         state = read_state(root)
-        if state.get("status") == "running":
+        status = state.get("status")
+        if status == "running":
             state["status"] = "stopping"
-            state["message"] = "soft stop requested"
+            state["message"] = message or "soft stop requested"
+            write_state(state, root)
+        elif status == "stopping" and message:
+            state["message"] = message
             write_state(state, root)
         return state
 

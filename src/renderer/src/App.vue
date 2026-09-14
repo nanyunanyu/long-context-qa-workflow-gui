@@ -54,7 +54,7 @@
             >
               <span class="run-status-dot" aria-hidden="true" />
               <span>{{ runStatusLabel }}</span>
-              <span v-if="runStatusClaimed != null" class="run-status-claimed">已领 {{ runStatusClaimed }}</span>
+              <span v-if="runStatusClaimed != null" class="run-status-claimed"> 已领 {{ runStatusClaimed }}</span>
             </el-tag>
           </div>
         </el-header>
@@ -128,16 +128,24 @@ const RUN_STATUS_UI: Record<string, { label: string; tone: string; tag: "info" |
   interrupted: { label: "已中断", tone: "interrupted", tag: "danger" },
 };
 
+function isQuotaStopMessage(message: unknown) {
+  return /额度耗尽|insufficient_quota|credit_balance_exhausted/i.test(String(message || ""));
+}
+
 const runStatus = computed(() => snapshot.value?.run?.status || "idle");
-const runStatusLabel = computed(
-  () => RUN_STATUS_UI[runStatus.value]?.label || String(runStatus.value)
-);
-const runStatusTone = computed(
-  () => RUN_STATUS_UI[runStatus.value]?.tone || "idle"
-);
-const runStatusTagType = computed(
-  () => RUN_STATUS_UI[runStatus.value]?.tag || "info"
-);
+const quotaStopped = computed(() => isQuotaStopMessage(snapshot.value?.run?.message));
+const runStatusLabel = computed(() => {
+  if (runStatus.value === "idle" && quotaStopped.value) return "额度耗尽";
+  return RUN_STATUS_UI[runStatus.value]?.label || String(runStatus.value);
+});
+const runStatusTone = computed(() => {
+  if (runStatus.value === "idle" && quotaStopped.value) return "interrupted";
+  return RUN_STATUS_UI[runStatus.value]?.tone || "idle";
+});
+const runStatusTagType = computed(() => {
+  if (runStatus.value === "idle" && quotaStopped.value) return "danger";
+  return RUN_STATUS_UI[runStatus.value]?.tag || "info";
+});
 const runStatusClaimed = computed(() => {
   if (!["running", "stopping"].includes(runStatus.value)) return null;
   const claimed = snapshot.value?.run?.claimed;
