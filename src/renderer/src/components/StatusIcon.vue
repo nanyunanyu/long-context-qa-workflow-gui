@@ -1,23 +1,24 @@
 <template>
   <span class="status" :class="tone" :title="tip">
-    <n-icon class="icon" size="16" :component="icon" />
+    <el-icon class="icon" :size="16">
+      <component :is="icon" />
+    </el-icon>
     <span v-if="showLabel" class="text">{{ label }}</span>
   </span>
 </template>
 
 <script setup lang="ts">
 import { computed, type Component } from "vue";
-import { NIcon } from "naive-ui";
 import {
-  CheckmarkOutline,
-  CloseOutline,
-  PauseOutline,
-  PlayOutline,
-  RemoveOutline,
-  SearchOutline,
-  TimeOutline,
-  WarningOutline,
-} from "@vicons/ionicons5";
+  CircleCheck,
+  CircleClose,
+  Clock,
+  Minus,
+  Search,
+  VideoPause,
+  VideoPlay,
+  Warning,
+} from "@element-plus/icons-vue";
 import type { TaskVisualState } from "../api";
 
 const props = withDefaults(
@@ -35,22 +36,22 @@ const props = withDefaults(
 const icon = computed<Component>(() => {
   switch (props.state) {
     case "passed":
-      return CheckmarkOutline;
+      return CircleCheck;
     case "borderline_50":
-      return RemoveOutline;
+      return Minus;
     case "gate_failed":
     case "cancelled":
-      return CloseOutline;
+      return CircleClose;
     case "manual_review":
-      return SearchOutline;
+      return Search;
     case "blocked":
-      return WarningOutline;
+      return Warning;
     case "running":
-      return PlayOutline;
+      return VideoPlay;
     case "paused":
-      return PauseOutline;
+      return VideoPause;
     default:
-      return TimeOutline;
+      return Clock;
   }
 });
 

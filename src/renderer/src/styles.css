@@ -6,6 +6,13 @@
   --border: #e2e8f0;
   --text: #1a365d;
   --muted: #4a5568;
+  --el-color-primary: #2b6cb0;
+  --el-color-primary-light-3: #3182ce;
+  --el-color-primary-light-5: #63b3ed;
+  --el-color-primary-light-7: #90cdf4;
+  --el-color-primary-light-8: #bee3f8;
+  --el-color-primary-light-9: #ebf8ff;
+  --el-color-primary-dark-2: #2c5282;
 }
 
 * {
@@ -23,13 +30,87 @@ body,
   font-family: "PingFang SC", "Noto Sans SC", "Helvetica Neue", sans-serif;
 }
 
+#app,
 #app > * {
   height: 100%;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 
-button {
-  font-family: inherit;
+.el-tag.tone-teal {
+  --el-tag-bg-color: #ccfbf1;
+  --el-tag-border-color: #99f6e4;
+  --el-tag-text-color: #0f766e;
+}
+.el-tag.tone-blue {
+  --el-tag-bg-color: #dbeafe;
+  --el-tag-border-color: #bfdbfe;
+  --el-tag-text-color: #1d4ed8;
+}
+.el-tag.tone-green,
+.el-tag.tone-READY,
+.el-tag.tone-pass {
+  --el-tag-bg-color: #dcfce7;
+  --el-tag-border-color: #bbf7d0;
+  --el-tag-text-color: #166534;
+}
+.el-tag.tone-amber,
+.el-tag.tone-OTHER,
+.el-tag.tone-warn {
+  --el-tag-bg-color: #fef3c7;
+  --el-tag-border-color: #fde68a;
+  --el-tag-text-color: #92400e;
+}
+.el-tag.tone-rose,
+.el-tag.tone-GATE_FAILED,
+.el-tag.tone-fail {
+  --el-tag-bg-color: #ffe4e6;
+  --el-tag-border-color: #fecdd3;
+  --el-tag-text-color: #9f1239;
+}
+.el-tag.tone-slate,
+.el-tag.tone-USED,
+.el-tag.tone-neutral,
+.el-tag.tone-pending {
+  --el-tag-bg-color: #e2e8f0;
+  --el-tag-border-color: #cbd5e1;
+  --el-tag-text-color: #334155;
+}
+.el-tag.tone-cyan {
+  --el-tag-bg-color: #cffafe;
+  --el-tag-border-color: #a5f3fc;
+  --el-tag-text-color: #0e7490;
+}
+.el-tag.tone-orange {
+  --el-tag-bg-color: #ffedd5;
+  --el-tag-border-color: #fed7aa;
+  --el-tag-text-color: #c2410c;
+}
+.el-tag.tone-indigo,
+.el-tag.tone-IN_PROGRESS,
+.el-tag.tone-progress,
+.el-tag.tone-running {
+  --el-tag-bg-color: #dbeafe;
+  --el-tag-border-color: #bfdbfe;
+  --el-tag-text-color: #1d4ed8;
+}
+.el-tag.tone-lime {
+  --el-tag-bg-color: #ecfccb;
+  --el-tag-border-color: #d9f99d;
+  --el-tag-text-color: #3f6212;
+}
+.el-tag.tone-abort,
+.el-tag.tone-issue {
+  --el-tag-bg-color: #ffedd5;
+  --el-tag-border-color: #fed7aa;
+  --el-tag-text-color: #9a3412;
+}
+.el-tag.tone-ok {
+  --el-tag-bg-color: #dcfce7;
+  --el-tag-border-color: #bbf7d0;
+  --el-tag-text-color: #166534;
+}
+.el-tag.tone-used {
+  --el-tag-bg-color: #e2e8f0;
+  --el-tag-border-color: #cbd5e1;
+  --el-tag-text-color: #334155;
 }

@@ -1,7 +1,7 @@
 <template>
-  <n-config-provider class="app-root" :theme-overrides="theme">
-    <div class="shell">
-      <aside class="sidebar">
+  <el-config-provider class="app-root" :locale="zhCn">
+    <el-container class="shell">
+      <el-aside width="220px" class="sidebar">
         <div class="brand">
           <div class="brand-mark" aria-hidden="true">QA</div>
           <div class="brand-text">
@@ -9,66 +9,67 @@
             <p>本地产线控制台</p>
           </div>
         </div>
-        <nav class="menu">
-          <button type="button" :class="{ active: tab === 'workspace' }" @click="tab = 'workspace'">
-            <n-icon class="nav-icon" size="16" :component="HomeOutline" />
+        <el-menu :default-active="tab" class="nav-menu" @select="onMenuSelect">
+          <el-menu-item index="workspace">
+            <el-icon><House /></el-icon>
             <span>工作区</span>
-          </button>
-          <button type="button" :class="{ active: tab === 'board' }" @click="tab = 'board'">
-            <n-icon class="nav-icon" size="16" :component="GridOutline" />
+          </el-menu-item>
+          <el-menu-item index="board">
+            <el-icon><Grid /></el-icon>
             <span>生产看板</span>
-          </button>
-          <button type="button" :class="{ active: tab === 'materials' }" @click="tab = 'materials'">
-            <n-icon class="nav-icon" size="16" :component="DocumentTextOutline" />
+          </el-menu-item>
+          <el-menu-item index="materials">
+            <el-icon><Document /></el-icon>
             <span>材料</span>
-          </button>
-          <button type="button" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">
-            <n-icon class="nav-icon" size="16" :component="SettingsOutline" />
+          </el-menu-item>
+          <el-menu-item index="settings">
+            <el-icon><Setting /></el-icon>
             <span>设置</span>
-          </button>
-        </nav>
+          </el-menu-item>
+        </el-menu>
         <div class="sidebar-footer">
-          <button v-if="workspace" type="button" class="reset" @click="resetWorkspace">更换目录</button>
+          <el-button v-if="workspace" class="reset" @click="resetWorkspace">更换目录</el-button>
         </div>
-      </aside>
+      </el-aside>
 
-      <div class="content">
-        <header class="top">
+      <el-container class="content">
+        <el-header class="top" height="auto">
           <div>
             <h2>{{ titles[tab] }}</h2>
             <p v-if="workspace" class="path">{{ workspace }}</p>
             <p v-else class="path">尚未选择工作根目录</p>
           </div>
           <div class="top-pills">
-            <span class="pill" :class="keysReady ? 'ok' : 'warn'">
+            <el-tag size="small" :type="keysReady ? 'success' : 'warning'" effect="light">
               密钥 {{ keysReady ? "已就绪" : keys.file_exists ? "不完整" : "未配置" }}
-            </span>
-            <span
+            </el-tag>
+            <el-tag
               v-if="workspace"
+              size="small"
               class="run-status"
               :class="'tone-' + runStatusTone"
+              :type="runStatusTagType"
+              effect="light"
               :title="runStatusTitle"
             >
               <span class="run-status-dot" aria-hidden="true" />
               <span>{{ runStatusLabel }}</span>
               <span v-if="runStatusClaimed != null" class="run-status-claimed">已领 {{ runStatusClaimed }}</span>
-            </span>
+            </el-tag>
           </div>
-        </header>
+        </el-header>
 
-        <main class="main">
+        <el-main class="main">
           <WorkspaceView
             v-show="tab === 'workspace'"
             :recents="recents"
             @opened="onOpened"
           />
           <SettingsView v-show="tab === 'settings'" @saved="onSettingsSaved" />
-          <div
+          <el-empty
             v-show="!workspace && (tab === 'board' || tab === 'materials')"
-            class="empty"
-          >
-            请先在「工作区」选择目录后再{{ tab === "materials" ? "查看材料" : "生产" }}。
-          </div>
+            :description="tab === 'materials' ? '请先在「工作区」选择目录后再查看材料。' : '请先在「工作区」选择目录后再生产。'"
+          />
           <KeepAlive>
             <BoardView
               v-if="workspace && tab === 'board'"
@@ -85,30 +86,21 @@
               @prefs-saved="onPrefsSaved"
             />
           </KeepAlive>
-        </main>
-      </div>
-    </div>
-  </n-config-provider>
+        </el-main>
+      </el-container>
+    </el-container>
+  </el-config-provider>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { NConfigProvider, NIcon } from "naive-ui";
-import { DocumentTextOutline, GridOutline, HomeOutline, SettingsOutline } from "@vicons/ionicons5";
+import zhCn from "element-plus/es/locale/lang/zh-cn";
+import { Document, Grid, House, Setting } from "@element-plus/icons-vue";
 import { apiGet, apiPost, apiPut } from "./api";
 import WorkspaceView from "./views/WorkspaceView.vue";
 import MaterialsView from "./views/MaterialsView.vue";
 import BoardView from "./views/BoardView.vue";
 import SettingsView from "./views/SettingsView.vue";
-
-const theme = {
-  common: {
-    primaryColor: "#2B6CB0",
-    primaryColorHover: "#3182CE",
-    primaryColorPressed: "#2C5282",
-    borderRadius: "8px",
-  },
-};
 
 const titles: Record<string, string> = {
   workspace: "工作区",
@@ -129,11 +121,11 @@ let tabSaveTimer: number | undefined;
 
 const keysReady = computed(() => !!keys.value.ready);
 
-const RUN_STATUS_UI: Record<string, { label: string; tone: string }> = {
-  idle: { label: "空闲", tone: "idle" },
-  running: { label: "运行中", tone: "running" },
-  stopping: { label: "停止中", tone: "stopping" },
-  interrupted: { label: "已中断", tone: "interrupted" },
+const RUN_STATUS_UI: Record<string, { label: string; tone: string; tag: "info" | "success" | "warning" | "danger" }> = {
+  idle: { label: "空闲", tone: "idle", tag: "info" },
+  running: { label: "运行中", tone: "running", tag: "success" },
+  stopping: { label: "停止中", tone: "stopping", tag: "warning" },
+  interrupted: { label: "已中断", tone: "interrupted", tag: "danger" },
 };
 
 const runStatus = computed(() => snapshot.value?.run?.status || "idle");
@@ -142,6 +134,9 @@ const runStatusLabel = computed(
 );
 const runStatusTone = computed(
   () => RUN_STATUS_UI[runStatus.value]?.tone || "idle"
+);
+const runStatusTagType = computed(
+  () => RUN_STATUS_UI[runStatus.value]?.tag || "info"
 );
 const runStatusClaimed = computed(() => {
   if (!["running", "stopping"].includes(runStatus.value)) return null;
@@ -156,6 +151,12 @@ const runStatusTitle = computed(() => {
   if (run.message) bits.push(String(run.message));
   return bits.join(" · ");
 });
+
+function onMenuSelect(index: string) {
+  if (index === "workspace" || index === "board" || index === "materials" || index === "settings") {
+    tab.value = index;
+  }
+}
 
 async function loadRecents() {
   const data = await apiGet("/api/recents");
@@ -213,9 +214,6 @@ async function bootstrap() {
     uiPrefs.value = null;
   }
   const prefs = uiPrefs.value;
-  if (prefs?.last_tab && ["workspace", "board", "materials", "settings"].includes(prefs.last_tab)) {
-    // only apply tab after workspace open; keep workspace first if no auto-open
-  }
   if (prefs?.auto_open_workspace && prefs?.last_workspace) {
     try {
       const info = await apiPost("/api/workspace/open", { path: prefs.last_workspace });
@@ -253,18 +251,17 @@ onUnmounted(() => {
   flex: 1;
 }
 .shell {
-  flex: 1 1 auto;
+  height: 100%;
   min-height: 0;
   width: 100%;
-  display: flex;
-  align-items: stretch;
+  flex-direction: row;
   overflow: hidden;
   background: var(--bg);
 }
 .sidebar {
   width: 220px;
   flex: 0 0 220px;
-  align-self: stretch;
+  height: 100%;
   background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
   border-right: 1px solid var(--border);
   display: flex;
@@ -311,55 +308,9 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--muted);
 }
-.menu {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.menu button {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  text-align: left;
-  border: 0;
+.nav-menu {
+  border-right: 0;
   background: transparent;
-  color: var(--primary-dark);
-  padding: 10px 14px;
-  border-radius: 10px;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1.2;
-  transition: background 150ms ease, color 150ms ease;
-}
-.menu button:hover {
-  background: #f0f7ff;
-}
-.menu button.active {
-  background: #ebf8ff;
-  color: var(--primary);
-  font-weight: 600;
-}
-.menu button.active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 999px;
-  background: var(--primary);
-}
-.nav-icon {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
-  opacity: 0.85;
-  overflow: visible;
-}
-.menu button.active .nav-icon {
-  opacity: 1;
 }
 .sidebar-footer {
   margin-top: auto;
@@ -368,25 +319,11 @@ onUnmounted(() => {
 }
 .reset {
   width: 100%;
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--muted);
-  border-radius: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-  font-size: 13px;
-  transition: border-color 150ms ease, color 150ms ease;
-}
-.reset:hover {
-  border-color: var(--primary);
-  color: var(--primary);
 }
 .content {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  align-self: stretch;
-  display: flex;
   flex-direction: column;
   overflow: hidden;
 }
@@ -398,7 +335,7 @@ onUnmounted(() => {
   padding: 18px 24px 12px;
   border-bottom: 1px solid var(--border);
   background: #fff;
-  flex-shrink: 0;
+  height: auto;
 }
 .top h2 {
   margin: 0;
@@ -422,41 +359,10 @@ onUnmounted(() => {
   gap: 6px;
   flex-shrink: 0;
 }
-.pill,
 .run-status {
   display: inline-flex;
   align-items: center;
-  flex-shrink: 0;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
-  letter-spacing: 0.01em;
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-.pill {
-  background: #ffedd5;
-  color: #9a3412;
-  border-color: #fed7aa;
-}
-.pill.ok {
-  background: #dcfce7;
-  color: #166534;
-  border-color: #bbf7d0;
-}
-.pill.warn {
-  background: #ffedd5;
-  color: #9a3412;
-  border-color: #fed7aa;
-}
-.run-status {
   gap: 5px;
-  overflow: visible;
-  background: #f1f5f9;
-  color: #475569;
-  border-color: #e2e8f0;
 }
 .run-status-dot {
   position: relative;
@@ -480,31 +386,11 @@ onUnmounted(() => {
   opacity: 0.72;
   font-weight: 500;
 }
-.run-status.tone-idle {
-  background: #f1f5f9;
-  border-color: #e2e8f0;
-  color: #475569;
-}
-.run-status.tone-running {
-  background: #ecfdf5;
-  border-color: #a7f3d0;
-  color: #047857;
-}
 .run-status.tone-running .run-status-dot {
   animation: run-status-core 1.4s ease-in-out infinite;
 }
 .run-status.tone-running .run-status-dot::after {
   animation: run-status-ring 1.5s ease-out infinite;
-}
-.run-status.tone-stopping {
-  background: #fffbeb;
-  border-color: #fde68a;
-  color: #b45309;
-}
-.run-status.tone-interrupted {
-  background: #fff1f2;
-  border-color: #fecdd3;
-  color: #be123c;
 }
 @keyframes run-status-core {
   0%,
@@ -532,12 +418,6 @@ onUnmounted(() => {
   min-height: 0;
   padding: 20px 24px 28px;
   overflow: auto;
-}
-.empty {
-  background: #fff;
-  border: 1px dashed var(--border);
-  border-radius: 12px;
-  padding: 28px;
-  color: var(--muted);
+  background: var(--bg);
 }
 </style>

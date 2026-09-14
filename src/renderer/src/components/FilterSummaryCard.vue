@@ -1,39 +1,71 @@
 <template>
-  <section class="filter-summary" role="region" :aria-label="title">
-    <div class="filter-summary-head">
-      <strong>{{ title }}</strong>
-      <span class="hint">共 {{ total }} {{ unit }}</span>
-    </div>
-    <p v-if="!total" class="muted empty">当前筛选无{{ unit }}。</p>
-    <div v-else class="filter-summary-body">
-      <div v-for="group in visibleGroups" :key="group.name" class="summary-group">
-        <span class="summary-label">{{ group.name }}</span>
-        <div class="summary-pills">
-          <span v-for="item in group.items" :key="item.key" class="summary-pill">
-            <StatusIcon v-if="item.state" :state="item.state" />
-            <span
-              v-else-if="item.domainKey"
-              class="domain-tag"
-              :class="'tone-' + domainTagTone(item.domainKey)"
-              :title="item.domainKey"
-            >
-              {{ item.domainLabel || item.label || item.domainKey }}
-            </span>
-            <span v-else-if="item.chipTone" class="meta-chip" :class="'tone-' + item.chipTone">
-              {{ item.label }}
-            </span>
-            <span v-else>{{ item.label }}</span>
-            <strong>{{ item.count }}</strong>
-          </span>
-        </div>
+  <el-card class="filter-summary" shadow="never" role="region" :aria-label="title">
+    <div class="filter-summary-head" :class="{ 'has-body': expanded }">
+      <div class="filter-summary-head-main">
+        <strong>{{ title }}</strong>
+        <span class="hint">共 {{ total }} {{ unit }}</span>
       </div>
+      <el-button type="primary" link :aria-expanded="expanded" @click="expanded = !expanded">
+        {{ expanded ? "收起" : "展开" }}
+        <el-icon class="el-icon--right">
+          <ArrowUp v-if="expanded" />
+          <ArrowDown v-else />
+        </el-icon>
+      </el-button>
     </div>
-  </section>
+    <template v-if="expanded">
+      <el-empty v-if="!total" :description="'当前筛选无' + unit + '。'" :image-size="48" />
+      <template v-else>
+        <el-checkbox-group v-model="selectedNames" size="small" class="filter-summary-cats">
+          <el-checkbox-button v-for="name in groupNames" :key="name" :value="name">
+            {{ name }}
+          </el-checkbox-button>
+        </el-checkbox-group>
+        <el-empty
+          v-if="!visibleGroups.length"
+          description="请选择要显示的分类"
+          :image-size="48"
+        />
+        <div v-else class="filter-summary-body">
+          <div v-for="group in visibleGroups" :key="group.name" class="summary-group">
+            <span class="summary-label">{{ group.name }}</span>
+            <div class="summary-pills">
+              <span v-for="item in group.items" :key="item.key" class="summary-pill">
+                <StatusIcon v-if="item.state" :state="item.state" />
+                <el-tag
+                  v-else-if="item.domainKey"
+                  size="small"
+                  class="domain-tag"
+                  :class="'tone-' + domainTagTone(item.domainKey)"
+                  :title="item.domainKey"
+                >
+                  {{ item.domainLabel || item.label || item.domainKey }}
+                </el-tag>
+                <el-tag
+                  v-else-if="item.chipTone"
+                  size="small"
+                  :class="'tone-' + item.chipTone"
+                  :type="chipTagType(item.chipTone)"
+                  effect="light"
+                >
+                  {{ item.label }}
+                </el-tag>
+                <span v-else>{{ item.label }}</span>
+                <strong>{{ item.count }}</strong>
+              </span>
+            </div>
+          </div>
+        </div>
+      </template>
+    </template>
+  </el-card>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
+import { ArrowDown, ArrowUp } from "@element-plus/icons-vue";
 import { domainTagTone, type TaskVisualState } from "../api";
+import { chipTagType } from "../ui";
 import StatusIcon from "./StatusIcon.vue";
 
 export type SummaryChip = {
@@ -61,22 +93,48 @@ const props = withDefaults(
   { title: "当前筛选汇总", unit: "条" }
 );
 
-const visibleGroups = computed(() => props.groups.filter((g) => g.items.length > 0));
+const expanded = ref(true);
+const selectedNames = ref<string[]>([]);
+
+const groupNames = computed(() => props.groups.map((g) => g.name));
+
+watch(
+  () => groupNames.value.join("\0"),
+  () => {
+    const names = groupNames.value;
+    const prev = new Set(selectedNames.value);
+    selectedNames.value = [...names.filter((n) => prev.has(n)), ...names.filter((n) => !prev.has(n))];
+  },
+  { immediate: true }
+);
+
+const visibleGroups = computed(() => {
+  const selected = new Set(selectedNames.value);
+  return props.groups.filter((g) => selected.has(g.name) && g.items.length > 0);
+});
 </script>
 
 <style scoped>
 .filter-summary {
   margin: 0 0 12px;
+}
+.filter-summary :deep(.el-card__body) {
   padding: 10px 12px;
-  background: #f7fafc;
-  border: 1px solid var(--border);
-  border-radius: 10px;
 }
 .filter-summary-head {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.filter-summary-head.has-body {
+  margin-bottom: 8px;
+}
+.filter-summary-head-main {
+  display: flex;
   align-items: baseline;
   gap: 8px;
-  margin-bottom: 8px;
+  min-width: 0;
 }
 .filter-summary-head strong {
   font-size: 13px;
@@ -86,9 +144,8 @@ const visibleGroups = computed(() => props.groups.filter((g) => g.items.length >
   font-size: 12px;
   color: var(--muted);
 }
-.empty {
-  margin: 0;
-  font-size: 13px;
+.filter-summary-cats {
+  margin-bottom: 8px;
 }
 .filter-summary-body {
   display: flex;
@@ -138,82 +195,5 @@ const visibleGroups = computed(() => props.groups.filter((g) => g.items.length >
   width: 14px;
   height: 16px;
   flex-basis: 14px;
-}
-.domain-tag,
-.meta-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
-  white-space: nowrap;
-}
-.domain-tag.tone-teal {
-  color: #0f766e;
-  background: #ccfbf1;
-}
-.domain-tag.tone-blue {
-  color: #1d4ed8;
-  background: #dbeafe;
-}
-.domain-tag.tone-green {
-  color: #166534;
-  background: #dcfce7;
-}
-.domain-tag.tone-amber {
-  color: #92400e;
-  background: #fef3c7;
-}
-.domain-tag.tone-rose {
-  color: #9f1239;
-  background: #ffe4e6;
-}
-.domain-tag.tone-slate {
-  color: #334155;
-  background: #e2e8f0;
-}
-.domain-tag.tone-cyan {
-  color: #0e7490;
-  background: #cffafe;
-}
-.domain-tag.tone-orange {
-  color: #c2410c;
-  background: #ffedd5;
-}
-.domain-tag.tone-indigo {
-  color: #3730a3;
-  background: #e0e7ff;
-}
-.domain-tag.tone-lime {
-  color: #3f6212;
-  background: #ecfccb;
-}
-.meta-chip.tone-READY,
-.meta-chip.tone-pass {
-  color: #166534;
-  background: #dcfce7;
-}
-.meta-chip.tone-IN_PROGRESS,
-.meta-chip.tone-progress {
-  color: #1d4ed8;
-  background: #dbeafe;
-}
-.meta-chip.tone-USED,
-.meta-chip.tone-neutral,
-.meta-chip.tone-pending {
-  color: #334155;
-  background: #e2e8f0;
-}
-.meta-chip.tone-GATE_FAILED,
-.meta-chip.tone-fail {
-  color: #9f1239;
-  background: #ffe4e6;
-}
-.meta-chip.tone-OTHER,
-.meta-chip.tone-warn {
-  color: #92400e;
-  background: #fef3c7;
 }
 </style>

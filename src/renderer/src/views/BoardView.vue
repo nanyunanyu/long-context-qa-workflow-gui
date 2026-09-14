@@ -1,68 +1,55 @@
 <template>
   <div>
-    <section class="card controls">
-      <label>
-        本批条数
-        <input
-          v-if="materialMode === 'select'"
-          type="number"
-          :value="effectiveSelectCount"
-          min="0"
-          disabled
-          title="自选模式下等于将实际入队的材料包数量"
-        />
-        <input
-          v-else
-          v-model.number="limit"
-          type="number"
-          min="1"
-        />
-      </label>
-      <label>
-        并发
-        <input v-model.number="workers" type="number" min="1" max="10" />
-      </label>
-      <label>
-        出题类型
-        <select v-model="questionType" :disabled="running">
-          <option value="short_answer">短答案</option>
-          <option value="multiple_choice">选择题</option>
-          <option value="auto">自动</option>
-        </select>
-      </label>
-      <label class="check">
-        <input v-model="preferCold" type="checkbox" :disabled="materialMode === 'select'" />
-        优先冷源
-      </label>
-      <label class="check">
-        <input v-model="retryTechnical" type="checkbox" />
-        续跑技术失败
-      </label>
-      <div class="controls-actions">
-        <button class="primary" :disabled="running" @click="start">开始</button>
-        <button :disabled="!running" @click="stop">停止</button>
-        <button class="danger" :disabled="!running" @click="interrupt">立即中断</button>
-        <button :disabled="running" @click="resume">继续</button>
-      </div>
+    <el-card class="controls-card" shadow="never">
+      <el-form :inline="true" class="controls" @submit.prevent>
+        <el-form-item label="本批条数">
+          <el-input-number
+            v-if="materialMode === 'select'"
+            :model-value="effectiveSelectCount"
+            :min="0"
+            disabled
+            title="自选模式下等于将实际入队的材料包数量"
+          />
+          <el-input-number v-else v-model="limit" :min="1" />
+        </el-form-item>
+        <el-form-item label="并发">
+          <el-input-number v-model="workers" :min="1" :max="10" />
+        </el-form-item>
+        <el-form-item label="出题类型">
+          <el-select v-model="questionType" :disabled="running" style="width: 140px">
+            <el-option label="短答案" value="short_answer" />
+            <el-option label="选择题" value="multiple_choice" />
+            <el-option label="自动" value="auto" />
+          </el-select>
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="preferCold" :disabled="materialMode === 'select'">优先冷源</el-checkbox>
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="retryTechnical">续跑技术失败</el-checkbox>
+        </el-form-item>
+        <el-form-item class="controls-actions">
+          <el-button type="primary" :disabled="running" @click="start">开始</el-button>
+          <el-button :disabled="!running" @click="stop">停止</el-button>
+          <el-button type="danger" :disabled="!running" @click="interrupt">立即中断</el-button>
+          <el-button :disabled="running" @click="resume">继续</el-button>
+        </el-form-item>
+      </el-form>
       <p class="muted rule-hint">{{ questionTypeHint }}</p>
-    </section>
+    </el-card>
 
-    <section class="card">
+    <el-card class="card" shadow="never">
       <div class="mode-bar">
         <h2>材料来源</h2>
-        <button type="button" class="collapse-btn" @click="toggleMaterialsCollapsed">
+        <el-button type="primary" link @click="toggleMaterialsCollapsed">
           {{ materialsCollapsed ? "展开" : "收起" }}
-        </button>
+        </el-button>
         <template v-if="!materialsCollapsed">
-          <label class="radio">
-            <input v-model="materialMode" type="radio" value="auto" :disabled="running" />
-            自动挑选
-          </label>
-          <label class="radio">
-            <input v-model="materialMode" type="radio" value="select" :disabled="running" />
-            自选材料
-          </label>
-          <button type="button" :disabled="running" @click="loadMaterials">刷新材料</button>
+          <el-radio-group v-model="materialMode" :disabled="running">
+            <el-radio value="auto">自动挑选</el-radio>
+            <el-radio value="select">自选材料</el-radio>
+          </el-radio-group>
+          <el-button :disabled="running" @click="loadMaterials">刷新材料</el-button>
           <span v-if="materialMode === 'select'" class="hint">
             已选 {{ effectiveSelectCount }} / {{ flatPacks.length }}
             <template v-if="hiddenSelectedCount">（另有 {{ hiddenSelectedCount }} 个被当前筛选隐藏）</template>
@@ -79,101 +66,95 @@
 
       <template v-else-if="!materialsCollapsed">
         <div class="select-tools">
-          <label class="search-field">
-            搜索材料
-            <input
-              v-model="packSearch"
-              type="search"
-              placeholder="包名 / 领域 / 路径"
-              autocomplete="off"
+          <el-input
+            v-model="packSearch"
+            class="search-input"
+            clearable
+            placeholder="包名 / 领域 / 路径"
+            :prefix-icon="Search"
+          />
+          <el-select v-model="domainFilter" clearable placeholder="全部领域" style="width: 220px">
+            <el-option label="全部" value="" />
+            <el-option
+              v-for="d in domains"
+              :key="d.domain_key"
+              :label="`${d.domain} (${d.domain_key})`"
+              :value="d.domain_key"
             />
-          </label>
-          <label>
-            领域
-            <select v-model="domainFilter">
-              <option value="">全部</option>
-              <option v-for="d in domains" :key="d.domain_key" :value="d.domain_key">
-                {{ d.domain }} ({{ d.domain_key }})
-              </option>
-            </select>
-          </label>
-          <label class="check">
-            <input v-model="showUsed" type="checkbox" />
-            显示已用/失败包
-          </label>
-          <label class="check">
-            <input v-model="allowRerunUsed" type="checkbox" :disabled="running" />
-            允许重跑已用/失败包
-          </label>
+          </el-select>
+          <el-checkbox v-model="showUsed">显示已用/失败包</el-checkbox>
+          <el-checkbox v-model="allowRerunUsed" :disabled="running">允许重跑已用/失败包</el-checkbox>
         </div>
-        <p v-if="loadError" class="error">{{ loadError }}</p>
+        <el-alert v-if="loadError" type="error" :title="loadError" show-icon :closable="false" />
         <div class="pack-list">
-          <table>
-            <thead>
-              <tr>
-                <th class="col-pack-check">
-                  <input
-                    type="checkbox"
-                    :checked="allSelectablePacksSelected"
-                    :indeterminate.prop="someSelectablePacksSelected && !allSelectablePacksSelected"
-                    :disabled="running || !selectableVisiblePacks.length"
-                    title="全选 / 全部不选当前列表"
-                    @change="toggleSelectAllPacks"
-                  />
-                </th>
-                <th>材料包</th>
-                <th>状态</th>
-                <th>提示</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="pack in visiblePacks" :key="pack.key">
-                <td>
-                  <input
-                    type="checkbox"
-                    :checked="isSelected(pack.key)"
-                    :disabled="running || (!pack.ready && !showUsed)"
-                    @change="togglePack(pack)"
-                  />
-                </td>
-                <td>
-                  <div class="pack-title">
-                    <strong>{{ pack.pack }}</strong>
-                    <template v-for="kind in [docKindPresentation(pack.doc_count, pack.doc_kind)]" :key="pack.key + '-dk'">
-                      <span v-if="kind.show" class="meta-chip" :class="'tone-' + kind.tone" :title="kind.title">
-                        {{ kind.label }}
-                      </span>
-                    </template>
-                    <template v-for="au in [packAuditChip(pack)]" :key="pack.key + '-au'">
-                      <button
-                        type="button"
-                        class="review-chip"
-                        :class="'tone-' + au.tone"
-                        :title="au.title"
-                        @click="openPackAuditDialog(pack)"
-                      >
-                        {{ au.label }}
-                      </button>
-                    </template>
-                  </div>
-                  <div class="muted">{{ pack.domain_key }} · {{ pack.path }}</div>
-                </td>
-                <td>
-                  <span :class="pack.ready ? 'ok' : 'warn'">{{ pack.status }}</span>
-                </td>
-                <td>{{ pack.hint }}</td>
-              </tr>
-              <tr v-if="!visiblePacks.length">
-                <td colspan="4" class="muted">
-                  {{
-                    packSearch.trim()
-                      ? "没有匹配当前搜索的材料包。"
-                      : "没有可显示的材料包。请先在「材料」页检查目录，或勾选显示已用包。"
-                  }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <el-table :data="visiblePacks" size="small" empty-text="没有可显示的材料包。">
+            <el-table-column width="48">
+              <template #header>
+                <el-checkbox
+                  :model-value="allSelectablePacksSelected"
+                  :indeterminate="someSelectablePacksSelected && !allSelectablePacksSelected"
+                  :disabled="running || !selectableVisiblePacks.length"
+                  @change="toggleSelectAllPacks"
+                />
+              </template>
+              <template #default="{ row }">
+                <el-checkbox
+                  :model-value="isSelected(row.key)"
+                  :disabled="running || (!row.ready && !showUsed)"
+                  @change="togglePack(row)"
+                />
+              </template>
+            </el-table-column>
+            <el-table-column label="材料包" min-width="280">
+              <template #default="{ row }">
+                <div class="pack-title">
+                  <strong>{{ row.pack }}</strong>
+                  <template v-for="kind in [docKindPresentation(row.doc_count, row.doc_kind)]" :key="row.key + '-dk'">
+                    <el-tag
+                      v-if="kind.show"
+                      size="small"
+                      :class="'tone-' + kind.tone"
+                      :type="chipTagType(kind.tone)"
+                      effect="light"
+                      :title="kind.title"
+                    >
+                      {{ kind.label }}
+                    </el-tag>
+                  </template>
+                  <template v-for="au in [packAuditChip(row)]" :key="row.key + '-au'">
+                    <el-tag
+                      size="small"
+                      class="clickable-tag"
+                      :class="'tone-' + au.tone"
+                      :type="chipTagType(au.tone)"
+                      effect="light"
+                      :title="au.title"
+                      @click="openPackAuditDialog(row)"
+                    >
+                      {{ au.label }}
+                    </el-tag>
+                  </template>
+                </div>
+                <div class="muted">{{ row.domain_key }} · {{ row.path }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="120">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.ready ? 'success' : 'warning'" effect="light">{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="提示" min-width="160" prop="hint" show-overflow-tooltip />
+            <template #empty>
+              <el-empty
+                :description="
+                  packSearch.trim()
+                    ? '没有匹配当前搜索的材料包。'
+                    : '没有可显示的材料包。请先在「材料」页检查目录，或勾选显示已用包。'
+                "
+                :image-size="64"
+              />
+            </template>
+          </el-table>
         </div>
         <p class="muted">
           自选模式下本批条数 = 将实际入队的包数量。默认只计 READY；勾选「允许重跑已用/失败包」才会计入已用包并带
@@ -183,95 +164,92 @@
           当前筛选下有 {{ hiddenSelectedCount }} 个已选包未显示，本批条数仍计入它们。可点表头勾选框清空，或去掉领域/搜索筛选查看。
         </p>
       </template>
-    </section>
+    </el-card>
 
-    <section class="card">
+    <el-card class="card" shadow="never">
       <div class="status-bar">
         <div class="status-row status-lookup">
           <h2>生产状态</h2>
           <span class="hint">已筛 {{ filteredTasks.length }} / {{ tasks.length }}</span>
-          <label class="search-field inline-search">
-            搜索材料
-            <input
-              v-model="taskSearch"
-              type="search"
-              placeholder="slug / 包名 / 领域"
-              autocomplete="off"
-            />
-          </label>
-          <div class="filter-wrap" v-click-outside="closeFilter">
-            <button type="button" :class="{ active: filterOpen }" @click="filterOpen = !filterOpen">筛选</button>
-            <div v-if="filterOpen" class="filter-panel" role="dialog" aria-label="按队列状态筛选">
-              <div class="filter-panel-head">
-                <strong>按队列状态筛选</strong>
-                <div class="drawer-actions">
-                  <button type="button" @click="selectAllStatuses">全选</button>
-                  <button type="button" @click="clearStatuses">清空</button>
-                </div>
+          <el-input
+            v-model="taskSearch"
+            class="search-input"
+            clearable
+            placeholder="slug / 包名 / 领域"
+            :prefix-icon="Search"
+          />
+          <el-popover v-model:visible="filterOpen" trigger="click" placement="bottom-start" :width="280">
+            <template #reference>
+              <el-button :type="filterOpen ? 'primary' : 'default'">筛选</el-button>
+            </template>
+            <div class="filter-panel-head">
+              <strong>按队列状态筛选</strong>
+              <div class="drawer-actions">
+                <el-button type="primary" link @click="selectAllStatuses">全选</el-button>
+                <el-button type="primary" link @click="clearStatuses">清空</el-button>
               </div>
-              <n-checkbox-group v-model:value="selectedStatuses">
-                <div v-for="opt in QUEUE_STATUS_OPTIONS" :key="opt.value" class="check-row">
-                  <n-checkbox :value="opt.value" :label="opt.label" />
-                </div>
-              </n-checkbox-group>
             </div>
-          </div>
+            <el-checkbox-group v-model="selectedStatuses">
+              <div v-for="opt in QUEUE_STATUS_OPTIONS" :key="opt.value" class="check-row">
+                <el-checkbox :value="opt.value">{{ opt.label }}</el-checkbox>
+              </div>
+            </el-checkbox-group>
+          </el-popover>
         </div>
         <div class="status-row status-tools">
           <div class="date-filter-group">
-            <label class="date-filter" title="按结束日筛选已完结任务；排队/运行中不受日期影响">
+            <span class="date-filter" title="按结束日筛选已完结任务；排队/运行中不受日期影响">
               起日
-              <n-date-picker
-                v-model:value="dateFromTs"
+              <el-date-picker
+                v-model="dateFromModel"
                 type="date"
+                value-format="YYYY-MM-DD"
                 clearable
                 size="small"
                 placeholder="选择日期"
-                :default-calendar-start-time="dateFromCalendarDefault"
+                style="width: 148px"
               />
-            </label>
-            <label class="date-filter" title="按结束日筛选已完结任务；排队/运行中不受日期影响">
+            </span>
+            <span class="date-filter" title="按结束日筛选已完结任务；排队/运行中不受日期影响">
               止日
-              <n-date-picker
-                v-model:value="dateToTs"
+              <el-date-picker
+                v-model="dateToModel"
                 type="date"
+                value-format="YYYY-MM-DD"
                 clearable
                 size="small"
                 placeholder="选择日期"
+                style="width: 148px"
               />
-            </label>
-            <button
-              v-if="dateFrom || dateTo"
-              type="button"
-              class="link clear-dates"
-              @click="clearDateFilter"
-            >
-              清空日期
-            </button>
+            </span>
+            <el-button v-if="dateFrom || dateTo" type="primary" link @click="clearDateFilter">清空日期</el-button>
           </div>
           <div class="status-actions">
-            <button type="button" :disabled="running || !selectableFiltered.length" @click="selectAllFiltered">
+            <el-button :disabled="running || !selectableFiltered.length" @click="selectAllFiltered">
               全选当前筛选
-            </button>
-            <button type="button" :disabled="!selectedTaskIds.length" @click="clearTaskSelection">清空选择</button>
+            </el-button>
+            <el-button :disabled="!selectedTaskIds.length" @click="clearTaskSelection">清空选择</el-button>
             <span v-if="selectedTaskIds.length" class="hint">已选 {{ selectedTaskIds.length }}</span>
-            <n-dropdown
-              trigger="click"
-              placement="bottom-end"
-              :options="batchActionOptions"
-              :disabled="batchMenuDisabled"
-              @select="onBatchActionSelect"
-            >
-              <button
-                type="button"
-                class="batch-menu-btn"
-                :disabled="batchMenuDisabled"
-                title="对已选任务执行批量操作"
-              >
+            <el-dropdown trigger="click" :disabled="batchMenuDisabled" @command="onBatchActionSelect">
+              <el-button :disabled="batchMenuDisabled">
                 批量操作
-                <span class="action-caret" aria-hidden="true">▾</span>
-              </button>
-            </n-dropdown>
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="opt in batchActionOptions"
+                    :key="opt.key"
+                    :command="opt.key"
+                    :disabled="opt.disabled"
+                    :title="opt.title"
+                    :style="opt.danger ? { color: 'var(--el-color-danger)' } : undefined"
+                  >
+                    {{ opt.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
           </div>
         </div>
       </div>
@@ -281,235 +259,248 @@
         :total="filteredTasks.length"
         :groups="boardSummaryGroups"
       />
-      <table class="board-table">
-        <thead>
-          <tr>
-            <th class="col-check">
-              <input
-                type="checkbox"
-                :checked="allFilteredSelected"
-                :disabled="running || !selectableFiltered.length"
-                @change="toggleSelectAllFiltered"
-              />
-            </th>
-            <th class="col-status">状态</th>
-            <th class="col-material">材料</th>
-            <th class="col-stage">阶段</th>
-            <th class="col-pass">通过</th>
-            <th class="col-ended">结束</th>
-            <th class="col-actions">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="task in filteredTasks" :key="task.id">
-            <td class="col-check">
-              <input
-                type="checkbox"
-                :checked="selectedTaskSet.has(task.id)"
-                :disabled="running || !taskSelectable(task)"
-                @change="toggleTaskSelect(task)"
-              />
-            </td>
-            <td class="col-status">
-              <StatusIcon :state="taskVisualState(task, snapshot)" />
-            </td>
-            <td class="col-material">
-              <div v-for="parts in [taskSlugParts(task)]" :key="task.id + '-slug'" class="slug-cell">
-                <div class="slug-tags">
-                  <span
-                    class="domain-tag"
-                    :class="'tone-' + domainTagTone(parts.domainKey)"
-                    :title="parts.domainKey"
+      <el-table :data="filteredTasks" class="board-table" size="small" row-key="id">
+        <el-table-column width="48">
+          <template #header>
+            <el-checkbox
+              :model-value="allFilteredSelected"
+              :disabled="running || !selectableFiltered.length"
+              @change="toggleSelectAllFiltered"
+            />
+          </template>
+          <template #default="{ row }">
+            <el-checkbox
+              :model-value="selectedTaskSet.has(row.id)"
+              :disabled="running || !taskSelectable(row)"
+              @change="toggleTaskSelect(row)"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="96">
+          <template #default="{ row }">
+            <StatusIcon :state="taskVisualState(row, snapshot)" />
+          </template>
+        </el-table-column>
+        <el-table-column label="材料" min-width="220">
+          <template #default="{ row }">
+            <div v-for="parts in [taskSlugParts(row)]" :key="row.id + '-slug'" class="slug-cell">
+              <div class="slug-tags">
+                <el-tag
+                  size="small"
+                  class="domain-tag"
+                  :class="'tone-' + domainTagTone(parts.domainKey)"
+                  :title="parts.domainKey"
+                >
+                  {{ parts.domainLabel }}
+                </el-tag>
+                <template v-for="kind in [taskDocKindPresentation(row)]" :key="row.id + '-dk'">
+                  <el-tag
+                    v-if="kind.show"
+                    size="small"
+                    :class="'tone-' + kind.tone"
+                    :type="chipTagType(kind.tone)"
+                    effect="light"
+                    :title="kind.title"
                   >
-                    {{ parts.domainLabel }}
-                  </span>
-                  <template v-for="kind in [taskDocKindPresentation(task)]" :key="task.id + '-dk'">
-                    <span v-if="kind.show" class="meta-chip" :class="'tone-' + kind.tone" :title="kind.title">
-                      {{ kind.label }}
-                    </span>
-                  </template>
-                </div>
-                <span class="pack-name" :title="task.slug">{{ parts.pack }}</span>
+                    {{ kind.label }}
+                  </el-tag>
+                </template>
               </div>
-              <div v-if="task.duplicate_of" class="warn-hint">
-                同材料重复 · 请取消本条，保留 {{ task.duplicate_of }}
-              </div>
-            </td>
-            <td class="col-stage"><StageProgress :task="task" :snapshot="snapshot" /></td>
-            <td class="col-pass">
-              <div class="pass-stack">
-                <StatusIcon
-                  :state="passVisualState(task)"
-                  :label="passColumnLabel(task)"
-                  :title="passColumnTitle(task)"
-                />
-                <button
-                  v-if="autoReviewChip(task)"
-                  type="button"
-                  class="review-chip"
-                  :class="'tone-' + autoReviewChip(task).tone"
-                  :title="autoReviewChip(task).title"
-                  @click="openAutoReviewFromTask(task)"
-                >
-                  {{ autoReviewChip(task).label }}
-                </button>
-              </div>
-            </td>
-            <td class="col-ended ended">{{ formatEndedAt(task) }}</td>
-            <td class="col-actions">
-              <n-dropdown
-                v-if="taskHasActions(task)"
-                trigger="click"
-                placement="bottom-end"
-                :options="taskActionOptions(task)"
-                :disabled="running || statusBusy === task.id || batchBusy"
-                @select="(key) => onTaskActionSelect(key, task)"
+              <span class="pack-name" :title="row.slug">{{ parts.pack }}</span>
+            </div>
+            <div v-if="row.duplicate_of" class="warn-hint">
+              同材料重复 · 请取消本条，保留 {{ row.duplicate_of }}
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="阶段" min-width="160">
+          <template #default="{ row }">
+            <StageProgress :task="row" :snapshot="snapshot" />
+          </template>
+        </el-table-column>
+        <el-table-column label="通过" width="140">
+          <template #default="{ row }">
+            <div class="pass-stack">
+              <StatusIcon
+                :state="passVisualState(row)"
+                :label="passColumnLabel(row)"
+                :title="passColumnTitle(row)"
+              />
+              <el-tag
+                v-if="autoReviewChip(row)"
+                size="small"
+                class="clickable-tag"
+                :class="'tone-' + autoReviewChip(row).tone"
+                :type="chipTagType(autoReviewChip(row).tone)"
+                effect="light"
+                :title="autoReviewChip(row).title"
+                @click="openAutoReviewFromTask(row)"
               >
-                <button
-                  type="button"
-                  class="action-menu-btn"
-                  :disabled="running || statusBusy === task.id || batchBusy"
-                >
-                  操作
-                  <span class="action-caret" aria-hidden="true">▾</span>
-                </button>
-              </n-dropdown>
-              <span v-else class="muted">—</span>
-            </td>
-          </tr>
-          <tr v-if="!tasks.length">
-            <td colspan="7" class="muted">队列为空。请先选择材料并点开始，或放入材料后用自动挑选。</td>
-          </tr>
-          <tr v-else-if="!filteredTasks.length">
-            <td colspan="7" class="muted">
-              {{ taskSearch.trim() ? "没有匹配当前材料搜索的任务。" : "当前筛选无任务。" }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <div v-if="rejectDialog.open" class="modal-backdrop" @click.self="closeRejectDialog">
-      <div class="modal-card" role="dialog" :aria-label="rejectDialog.batch ? '批量复检不通过' : '复检不通过'">
-        <h3>{{ rejectDialog.batch ? "批量复检不通过" : "复检不通过" }}</h3>
-        <p class="muted">
-          <template v-if="rejectDialog.batch">
-            将对已选 <strong>{{ selectedHumanRejectIds.length }}</strong> 条任务打回（通过交付迁出 samples，或待复验迁出 pending-review）。
+                {{ autoReviewChip(row).label }}
+              </el-tag>
+            </div>
           </template>
-          <template v-else>
-            任务 <strong>{{ rejectDialog.slug }}</strong>：{{
-              rejectDialog.pendingReview
-                ? "将从待复验迁入 failed-samples、标为失败并释放材料。"
-                : "将迁出 samples 交付、标为失败并释放材料。"
-            }}
+        </el-table-column>
+        <el-table-column label="结束" width="124">
+          <template #default="{ row }">
+            <span class="ended">{{ formatEndedAt(row) }}</span>
           </template>
-        </p>
-        <label class="modal-field">
-          原因（必填）
-          <textarea v-model="rejectDialog.reason" rows="3" placeholder="例如：题干剧透 / 金标错误 / 证据不在文中" />
-        </label>
-        <label class="check modal-check">
-          <input v-model="rejectDialog.requeue" type="checkbox" />
-          同时改回排队以便同材料重跑
-        </label>
-        <p v-if="rejectDialog.error" class="error">{{ rejectDialog.error }}</p>
-        <div class="modal-actions">
-          <button type="button" :disabled="Boolean(statusBusy) || batchBusy" @click="closeRejectDialog">取消</button>
-          <button
-            type="button"
-            class="danger"
-            :disabled="Boolean(statusBusy) || batchBusy"
-            @click="submitHumanReject"
-          >
-            {{ rejectDialog.batch ? "确认批量打回" : "确认打回" }}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="packAuditDialog.open" class="modal-backdrop" @click.self="closePackAuditDialog">
-      <div class="modal-card modal-wide" role="dialog" aria-label="材料审核结果">
-        <h3>材料审核结果</h3>
-        <p class="muted">
-          材料包 <strong>{{ packAuditDialog.pack }}</strong>
-        </p>
-        <p class="review-verdict" :class="'tone-' + packAuditDialog.tone">{{ packAuditDialog.headline }}</p>
-        <p class="modal-reason">{{ packAuditDialog.summary || "—" }}</p>
-        <p v-if="packAuditDialog.notes" class="modal-reason">{{ packAuditDialog.notes }}</p>
-        <ul class="modal-checks">
-          <li>许可可用：{{ boolLabel(packAuditDialog.licenseOk) }}</li>
-          <li>体量足够：{{ boolLabel(packAuditDialog.enoughLength) }}</li>
-          <li>长上下文潜力：{{ boolLabel(packAuditDialog.longContextPotential) }}</li>
-          <li>足够冷门：{{ boolLabel(packAuditDialog.coldEnough) }}</li>
-          <li>模型：{{ packAuditDialog.model || "—" }}</li>
-          <li>时间：{{ packAuditDialog.reviewedAt || "—" }}</li>
-        </ul>
-        <div class="modal-actions">
-          <button type="button" class="primary" @click="closePackAuditDialog">关闭</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="autoReviewDialog.open" class="modal-backdrop" @click.self="closeAutoReviewDialog">
-      <div class="modal-card modal-wide" role="dialog" aria-label="自动复验结果">
-        <h3>自动复验结果</h3>
-        <p class="muted">
-          任务 <strong>{{ autoReviewDialog.slug }}</strong>
-        </p>
-        <p class="review-verdict" :class="'tone-' + autoReviewDialog.tone">{{ autoReviewDialog.headline }}</p>
-        <p class="modal-reason">{{ autoReviewDialog.reason || "—" }}</p>
-        <ul class="modal-checks">
-          <li>金标可被原文支持：{{ boolLabel(autoReviewDialog.goldSupported) }}</li>
-          <li>题干可判定：{{ boolLabel(autoReviewDialog.questionOk) }}</li>
-          <li v-if="autoReviewDialog.rescoredCount != null">假阴性改判正确数：{{ autoReviewDialog.rescoredCount }}</li>
-          <li v-if="autoReviewDialog.rescoredAvg != null">假阴性改判正确率：{{ autoReviewDialog.rescoredAvg }}</li>
-          <li>模型：{{ autoReviewDialog.model || "—" }}</li>
-          <li>时间：{{ autoReviewDialog.reviewedAt || "—" }}</li>
-        </ul>
-        <div class="modal-actions">
-          <button type="button" class="primary" @click="closeAutoReviewDialog">关闭</button>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="autoReviewBatchDialog.open" class="modal-backdrop" @click.self="closeAutoReviewBatchDialog">
-      <div class="modal-card modal-wide" role="dialog" aria-label="批量自动复验汇总">
-        <h3>批量自动复验汇总</h3>
-        <p class="muted">共 {{ autoReviewBatchDialog.rows.length }} 条</p>
-        <table class="summary-table">
-          <thead>
-            <tr>
-              <th>材料</th>
-              <th>结论</th>
-              <th>理由</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="row in autoReviewBatchDialog.rows"
-              :key="row.taskId"
-              class="clickable"
-              @click="openAutoReviewRecord(row.record, row.slug)"
+        </el-table-column>
+        <el-table-column label="操作" width="110" fixed="right">
+          <template #default="{ row }">
+            <el-dropdown
+              v-if="taskHasActions(row)"
+              trigger="click"
+              :disabled="running || statusBusy === row.id || batchBusy"
+              @command="(key) => onTaskActionSelect(key, row)"
             >
-              <td>{{ row.slug }}</td>
-              <td>
-                <span class="review-chip" :class="'tone-' + row.tone">{{ row.label }}</span>
-              </td>
-              <td class="muted">{{ row.reason }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="modal-actions">
-          <button type="button" class="primary" @click="closeAutoReviewBatchDialog">关闭</button>
-        </div>
-      </div>
-    </div>
+              <el-button
+                size="small"
+                :disabled="running || statusBusy === row.id || batchBusy"
+              >
+                操作
+                <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item
+                    v-for="opt in taskActionOptions(row)"
+                    :key="opt.key"
+                    :command="opt.key"
+                    :disabled="opt.disabled"
+                    :title="opt.title"
+                    :style="opt.danger ? { color: 'var(--el-color-danger)' } : undefined"
+                  >
+                    {{ opt.label }}
+                  </el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <template #empty>
+          <el-empty
+            :description="
+              !tasks.length
+                ? '队列为空。请先选择材料并点开始，或放入材料后用自动挑选。'
+                : taskSearch.trim()
+                  ? '没有匹配当前材料搜索的任务。'
+                  : '当前筛选无任务。'
+            "
+            :image-size="72"
+          />
+        </template>
+      </el-table>
+    </el-card>
+
+    <el-dialog
+      v-model="rejectDialog.open"
+      :title="rejectDialog.batch ? '批量复检不通过' : '复检不通过'"
+      width="480px"
+      :close-on-click-modal="!(statusBusy || batchBusy)"
+      :before-close="onRejectDialogBeforeClose"
+    >
+      <p class="muted">
+        <template v-if="rejectDialog.batch">
+          将对已选 <strong>{{ selectedHumanRejectIds.length }}</strong> 条任务打回（通过交付迁出 samples，或待复验迁出 pending-review）。
+        </template>
+        <template v-else>
+          任务 <strong>{{ rejectDialog.slug }}</strong>：{{
+            rejectDialog.pendingReview
+              ? "将从待复验迁入 failed-samples、标为失败并释放材料。"
+              : "将迁出 samples 交付、标为失败并释放材料。"
+          }}
+        </template>
+      </p>
+      <el-form label-position="top">
+        <el-form-item label="原因（必填）">
+          <el-input
+            v-model="rejectDialog.reason"
+            type="textarea"
+            :rows="3"
+            placeholder="例如：题干剧透 / 金标错误 / 证据不在文中"
+          />
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="rejectDialog.requeue">同时改回排队以便同材料重跑</el-checkbox>
+        </el-form-item>
+      </el-form>
+      <el-alert v-if="rejectDialog.error" type="error" :title="rejectDialog.error" show-icon :closable="false" />
+      <template #footer>
+        <el-button :disabled="Boolean(statusBusy) || batchBusy" @click="closeRejectDialog">取消</el-button>
+        <el-button type="danger" :disabled="Boolean(statusBusy) || batchBusy" @click="submitHumanReject">
+          {{ rejectDialog.batch ? "确认批量打回" : "确认打回" }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="packAuditDialog.open" title="材料审核结果" width="640px">
+      <p class="muted">
+        材料包 <strong>{{ packAuditDialog.pack }}</strong>
+      </p>
+      <p class="review-verdict" :class="'tone-' + packAuditDialog.tone">{{ packAuditDialog.headline }}</p>
+      <p class="modal-reason">{{ packAuditDialog.summary || "—" }}</p>
+      <p v-if="packAuditDialog.notes" class="modal-reason">{{ packAuditDialog.notes }}</p>
+      <ul class="modal-checks">
+        <li>许可可用：{{ boolLabel(packAuditDialog.licenseOk) }}</li>
+        <li>体量足够：{{ boolLabel(packAuditDialog.enoughLength) }}</li>
+        <li>长上下文潜力：{{ boolLabel(packAuditDialog.longContextPotential) }}</li>
+        <li>足够冷门：{{ boolLabel(packAuditDialog.coldEnough) }}</li>
+        <li>模型：{{ packAuditDialog.model || "—" }}</li>
+        <li>时间：{{ packAuditDialog.reviewedAt || "—" }}</li>
+      </ul>
+      <template #footer>
+        <el-button type="primary" @click="closePackAuditDialog">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="autoReviewDialog.open" title="自动复验结果" width="640px">
+      <p class="muted">
+        任务 <strong>{{ autoReviewDialog.slug }}</strong>
+      </p>
+      <p class="review-verdict" :class="'tone-' + autoReviewDialog.tone">{{ autoReviewDialog.headline }}</p>
+      <p class="modal-reason">{{ autoReviewDialog.reason || "—" }}</p>
+      <ul class="modal-checks">
+        <li>金标可被原文支持：{{ boolLabel(autoReviewDialog.goldSupported) }}</li>
+        <li>题干可判定：{{ boolLabel(autoReviewDialog.questionOk) }}</li>
+        <li v-if="autoReviewDialog.rescoredCount != null">假阴性改判正确数：{{ autoReviewDialog.rescoredCount }}</li>
+        <li v-if="autoReviewDialog.rescoredAvg != null">假阴性改判正确率：{{ autoReviewDialog.rescoredAvg }}</li>
+        <li>模型：{{ autoReviewDialog.model || "—" }}</li>
+        <li>时间：{{ autoReviewDialog.reviewedAt || "—" }}</li>
+      </ul>
+      <template #footer>
+        <el-button type="primary" @click="closeAutoReviewDialog">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="autoReviewBatchDialog.open" title="批量自动复验汇总" width="720px">
+      <p class="muted">共 {{ autoReviewBatchDialog.rows.length }} 条</p>
+      <el-table :data="autoReviewBatchDialog.rows" size="small" @row-click="onBatchReviewRowClick">
+        <el-table-column label="材料" prop="slug" min-width="180" />
+        <el-table-column label="结论" width="160">
+          <template #default="{ row }">
+            <el-tag size="small" :class="'tone-' + row.tone" :type="chipTagType(row.tone)" effect="light">
+              {{ row.label }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="理由" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="muted">{{ row.reason }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button type="primary" @click="closeAutoReviewBatchDialog">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onDeactivated, onMounted, onUnmounted, ref, watch, type Directive } from "vue";
-import { NCheckbox, NCheckboxGroup, NDatePicker, NDropdown, type DropdownOption } from "naive-ui";
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from "vue";
+import { ArrowDown, Search } from "@element-plus/icons-vue";
 import {
   ALL_QUEUE_STATUSES,
   QUEUE_STATUS_OPTIONS,
@@ -533,24 +524,13 @@ import {
   taskSlugParts,
   taskVisualState,
 } from "../api";
+import { chipTagType, confirmAction, toastError, toastWarning, type MenuAction } from "../ui";
 import FilterSummaryCard, { type SummaryGroup } from "../components/FilterSummaryCard.vue";
 import StatusIcon from "../components/StatusIcon.vue";
 import StageProgress from "../components/StageProgress.vue";
 
 const props = defineProps<{ snapshot: any; initialPrefs?: any }>();
 const emit = defineEmits(["refresh", "prefsSaved"]);
-
-const vClickOutside: Directive = {
-  mounted(el, binding) {
-    (el as any).__clickOutside = (ev: MouseEvent) => {
-      if (!el.contains(ev.target as Node)) binding.value?.(ev);
-    };
-    document.addEventListener("mousedown", (el as any).__clickOutside);
-  },
-  unmounted(el) {
-    document.removeEventListener("mousedown", (el as any).__clickOutside);
-  },
-};
 
 function boardStatusesFromPrefs(prefs: any): string[] | null {
   const saved = prefs?.board?.selected_statuses;
@@ -617,48 +597,26 @@ const allowRerunUsed = ref(false);
 const selectedKeys = ref<string[]>([]);
 const loadError = ref("");
 const filterOpen = ref(false);
-function closeFilter() {
-  filterOpen.value = false;
-}
 const materialsCollapsed = ref(Boolean(props.initialPrefs?.board?.materials_collapsed));
 const hydrated = boardStatusesFromPrefs(props.initialPrefs);
 const selectedStatuses = ref<string[]>(hydrated ?? [...ALL_QUEUE_STATUSES]);
 const dateFrom = ref(boardDateFromPrefs(props.initialPrefs, "date_from"));
 const dateTo = ref(boardDateFromPrefs(props.initialPrefs, "date_to"));
 
-/** Calendar panel opens to current year/month; value stays empty until user picks a day. */
-const dateFromCalendarDefault = (() => {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-})();
-
-function dayToLocalTs(day: string): number | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
-  const [y, m, d] = day.split("-").map(Number);
-  return new Date(y, m - 1, d).getTime();
-}
-
-function localTsToDay(ts: number): string {
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-const dateFromTs = computed<number | null>({
+const dateFromModel = computed<string | null>({
   get() {
-    return dayToLocalTs(dateFrom.value);
+    return dateFrom.value || null;
   },
   set(value) {
-    dateFrom.value = value == null ? "" : localTsToDay(value);
+    dateFrom.value = value || "";
   },
 });
-
-const dateToTs = computed<number | null>({
+const dateToModel = computed<string | null>({
   get() {
-    return dayToLocalTs(dateTo.value);
+    return dateTo.value || null;
   },
   set(value) {
-    dateTo.value = value == null ? "" : localTsToDay(value);
+    dateTo.value = value || "";
   },
 });
 
@@ -944,9 +902,16 @@ watch(effectiveSelectCount, (n) => {
 watch(materialMode, (mode) => {
   if (mode === "select") {
     limit.value = Math.max(1, effectiveSelectCount.value || 1);
-    if (!domains.value.length) loadMaterials();
+    ensureMaterialsLoaded();
   }
 });
+
+watch(
+  () => props.snapshot?.workspace,
+  (ws) => {
+    if (ws) ensureMaterialsLoaded();
+  }
+);
 
 watch(allowRerunUsed, (allow) => {
   if (allow) return;
@@ -974,20 +939,16 @@ function clearStatuses() {
   selectedStatuses.value = [];
 }
 
-const DANGER_ACTION_STYLE = "color: #c53030";
-
 function withBatchCount(label: string, count: number): string {
   return count ? `${label}（${count}）` : label;
 }
 
-const batchActionOptions = computed<DropdownOption[]>(() => [
+const batchActionOptions = computed<MenuAction[]>(() => [
   {
     label: withBatchCount("批量开始", selectedStartIds.value.length),
     key: "start",
     disabled: running.value || batchBusy.value || !selectedStartIds.value.length,
-    props: {
-      title: "领取已选排队任务并开始生产，不再挑选新材料",
-    },
+    title: "领取已选排队任务并开始生产，不再挑选新材料",
   },
   {
     label: withBatchCount("批量改回排队", selectedRequeueIds.value.length),
@@ -998,34 +959,28 @@ const batchActionOptions = computed<DropdownOption[]>(() => [
     label: withBatchCount("批量取消", selectedCancelIds.value.length),
     key: "cancel",
     disabled: running.value || batchBusy.value || !selectedCancelIds.value.length,
-    props: { style: DANGER_ACTION_STYLE },
+    danger: true,
   },
   {
     label: withBatchCount("批量复检通过", selectedReviewPassIds.value.length),
     key: "review_pass",
     disabled: running.value || batchBusy.value || !selectedReviewPassIds.value.length,
-    props: {
-      title: "对已选 blocked + 复验 0/8 任务逐条补跑消融并入库",
-    },
+    title: "对已选 blocked + 复验 0/8 任务逐条补跑消融并入库",
   },
   {
     label: withBatchCount("批量自动复验", selectedReviewPassIds.value.length),
     key: "auto_review",
     disabled: running.value || batchBusy.value || !reviewReady.value || !selectedReviewPassIds.value.length,
-    props: {
-      title: reviewReady.value
-        ? "对已选 复验 0/8 任务调用大模型自动判定并执行通过/打回"
-        : "请先在设置中配置复验模型或判分密钥",
-    },
+    title: reviewReady.value
+      ? "对已选 复验 0/8 任务调用大模型自动判定并执行通过/打回"
+      : "请先在设置中配置复验模型或判分密钥",
   },
   {
     label: withBatchCount("批量复检不通过", selectedHumanRejectIds.value.length),
     key: "human_reject",
     disabled: running.value || batchBusy.value || !selectedHumanRejectIds.value.length,
-    props: {
-      style: DANGER_ACTION_STYLE,
-      title: "对已选通过/待复验任务批量打回",
-    },
+    danger: true,
+    title: "对已选通过/待复验任务批量打回",
   },
 ]);
 
@@ -1066,26 +1021,22 @@ function taskHasActions(task: any): boolean {
   );
 }
 
-function taskActionOptions(task: any): DropdownOption[] {
-  const opts: DropdownOption[] = [];
+function taskActionOptions(task: any): MenuAction[] {
+  const opts: MenuAction[] = [];
   if (taskCanStart(task)) {
     opts.push({
       label: "开始生产",
       key: "start",
       disabled: running.value || batchBusy.value,
-      props: {
-        title: "领取这条排队任务并开始生产，不再挑选新材料",
-      },
+      title: "领取这条排队任务并开始生产，不再挑选新材料",
     });
   }
   if (task.can_human_reject) {
     opts.push({
       label: "复检不通过？",
       key: "human_reject",
-      props: {
-        style: DANGER_ACTION_STYLE,
-        title: "确认题/金标有问题：从待复验或 samples 迁入 failed-samples 并释放材料",
-      },
+      danger: true,
+      title: "确认题/金标有问题：从待复验或 samples 迁入 failed-samples 并释放材料",
     });
   }
   if (task.can_review_pass) {
@@ -1093,31 +1044,27 @@ function taskActionOptions(task: any): DropdownOption[] {
       label: "自动复验",
       key: "auto_review",
       disabled: !reviewReady.value,
-      props: {
-        title: reviewReady.value
-          ? "调用复验模型自动判定：通过则入库，不通过则打回"
-          : "请先在设置中配置复验模型或判分密钥",
-      },
+      title: reviewReady.value
+        ? "调用复验模型自动判定：通过则入库，不通过则打回"
+        : "请先在设置中配置复验模型或判分密钥",
     });
     opts.push({
       label: "复验通过",
       key: "review_pass",
-      props: {
-        title: "确认题/金标无误、0 分为模型答错后，补跑消融并以零分复验通过入库",
-      },
+      title: "确认题/金标无误、0 分为模型答错后，补跑消融并以零分复验通过入库",
     });
   }
   if (task.can_requeue) {
     opts.push({ label: "改回排队", key: "requeue" });
   }
   if (task.can_cancel) {
-    opts.push({
-      label: "取消",
-      key: "cancel",
-      props: { style: DANGER_ACTION_STYLE },
-    });
+    opts.push({ label: "取消", key: "cancel", danger: true });
   }
   return opts;
+}
+
+function onBatchReviewRowClick(row: any) {
+  openAutoReviewRecord(row.record, row.slug);
 }
 
 function onTaskActionSelect(key: string | number, task: any) {
@@ -1158,14 +1105,14 @@ async function changeStatus(taskId: string, status: "queued" | "cancelled") {
     selectedTaskIds.value = selectedTaskIds.value.filter((id) => id !== taskId);
     emit("refresh");
   } catch (err: any) {
-    alert(err?.message || String(err));
+    toastError(err);
   } finally {
     statusBusy.value = null;
   }
 }
 
 async function reviewPass(task: any) {
-  const ok = window.confirm(
+  const ok = await confirmAction(
     `确认「${task.slug}」题/金标无误，0/8 为模型答错？\n将补跑消融并以零分复验通过入库（可能数分钟）。`
   );
   if (!ok) return;
@@ -1174,7 +1121,7 @@ async function reviewPass(task: any) {
     await apiPost("/api/queue/task/review-pass", { task_id: task.id });
     emit("refresh");
   } catch (err: any) {
-    alert(err?.message || String(err));
+    toastError(err);
   } finally {
     statusBusy.value = null;
   }
@@ -1207,9 +1154,18 @@ function openBatchHumanReject() {
   };
 }
 
+function rejectDialogBusy() {
+  return statusBusy.value === rejectDialog.value.taskId || batchBusy.value;
+}
+
 function closeRejectDialog() {
-  if (statusBusy.value === rejectDialog.value.taskId || batchBusy.value) return;
+  if (rejectDialogBusy()) return;
   rejectDialog.value.open = false;
+}
+
+function onRejectDialogBeforeClose(done: () => void) {
+  if (rejectDialogBusy()) return;
+  done();
 }
 
 async function submitHumanReject() {
@@ -1234,7 +1190,7 @@ async function submitHumanReject() {
       });
       const errCount = result?.errors?.length || 0;
       if (errCount) {
-        alert(`已打回 ${result.count || 0} 条，失败 ${errCount} 条`);
+        toastWarning(`已打回 ${result.count || 0} 条，失败 ${errCount} 条`);
       }
       const done = new Set(result?.updated || ids);
       selectedTaskIds.value = selectedTaskIds.value.filter((id) => !done.has(id));
@@ -1298,8 +1254,7 @@ function clearTaskSelection() {
   selectedTaskIds.value = [];
 }
 
-function toggleSelectAllFiltered(ev: Event) {
-  const checked = (ev.target as HTMLInputElement).checked;
+function toggleSelectAllFiltered(checked: string | number | boolean) {
   if (checked) selectAllFiltered();
   else {
     const drop = new Set(selectableFiltered.value.map((t: any) => t.id));
@@ -1319,13 +1274,13 @@ async function batchChangeStatus(status: "queued" | "cancelled") {
     });
     const errCount = result?.errors?.length || 0;
     if (errCount) {
-      alert(`已更新 ${result.count || 0} 条，失败 ${errCount} 条`);
+      toastWarning(`已更新 ${result.count || 0} 条，失败 ${errCount} 条`);
     }
     const done = new Set(result?.updated || ids);
     selectedTaskIds.value = selectedTaskIds.value.filter((id) => !done.has(id));
     emit("refresh");
   } catch (err: any) {
-    alert(err?.message || String(err));
+    toastError(err);
   } finally {
     batchBusy.value = false;
   }
@@ -1334,7 +1289,7 @@ async function batchChangeStatus(status: "queued" | "cancelled") {
 async function batchReviewPass() {
   const ids = [...selectedReviewPassIds.value];
   if (!ids.length) return;
-  const ok = window.confirm(
+  const ok = await confirmAction(
     `确认对已选 ${ids.length} 条「复验 0/8」任务执行复检通过？\n将逐条补跑消融并以零分复验通过入库（可能较久）。`
   );
   if (!ok) return;
@@ -1343,13 +1298,13 @@ async function batchReviewPass() {
     const result = await apiPost("/api/queue/tasks/review-pass", { task_ids: ids });
     const skipped = result?.skipped?.length || 0;
     if (skipped) {
-      alert(`已启动 ${result.count || 0} 条复检通过；跳过 ${skipped} 条`);
+      toastWarning(`已启动 ${result.count || 0} 条复检通过；跳过 ${skipped} 条`);
     }
     const done = new Set(result?.task_ids || ids);
     selectedTaskIds.value = selectedTaskIds.value.filter((id) => !done.has(id));
     emit("refresh");
   } catch (err: any) {
-    alert(err?.message || String(err));
+    toastError(err);
   } finally {
     batchBusy.value = false;
   }
@@ -1472,10 +1427,10 @@ function showAutoReviewLastRun(lr: any) {
 
 async function autoReview(task: any) {
   if (!reviewReady.value) {
-    alert("请先在设置中配置复验模型，或确保判分密钥可用以便回落。");
+    toastWarning("请先在设置中配置复验模型，或确保判分密钥可用以便回落。");
     return;
   }
-  const ok = window.confirm(
+  const ok = await confirmAction(
     `对「${task.slug}」调用大模型自动复验？\n通过则补跑消融入库；恰好 4/8 进临界归档；过易则打回 failed-samples。`
   );
   if (!ok) return;
@@ -1484,7 +1439,7 @@ async function autoReview(task: any) {
     await apiPost("/api/queue/task/auto-review", { task_id: task.id });
     emit("refresh");
   } catch (err: any) {
-    alert(err?.message || String(err));
+    toastError(err);
   } finally {
     statusBusy.value = null;
   }
@@ -1494,10 +1449,10 @@ async function batchAutoReview() {
   const ids = [...selectedReviewPassIds.value];
   if (!ids.length) return;
   if (!reviewReady.value) {
-    alert("请先在设置中配置复验模型，或确保判分密钥可用以便回落。");
+    toastWarning("请先在设置中配置复验模型，或确保判分密钥可用以便回落。");
     return;
   }
-  const ok = window.confirm(
+  const ok = await confirmAction(
     `对已选 ${ids.length} 条「复验 0/8」任务执行自动复验？\n将逐条调用模型并自动入库或打回（可能较久）。`
   );
   if (!ok) return;
@@ -1506,13 +1461,13 @@ async function batchAutoReview() {
     const result = await apiPost("/api/queue/tasks/auto-review", { task_ids: ids });
     const skipped = result?.skipped?.length || 0;
     if (skipped) {
-      alert(`已启动 ${result.count || 0} 条自动复验；跳过 ${skipped} 条`);
+      toastWarning(`已启动 ${result.count || 0} 条自动复验；跳过 ${skipped} 条`);
     }
     const done = new Set(result?.task_ids || ids);
     selectedTaskIds.value = selectedTaskIds.value.filter((id) => !done.has(id));
     emit("refresh");
   } catch (err: any) {
-    alert(err?.message || String(err));
+    toastError(err);
   } finally {
     batchBusy.value = false;
   }
@@ -1596,14 +1551,30 @@ function toggleSelectAllPacks() {
   selectedKeys.value = selectableVisiblePacks.value.map((p) => p.key);
 }
 
+let materialsInflight: Promise<void> | null = null;
+
 async function loadMaterials() {
+  if (materialsInflight) return materialsInflight;
   loadError.value = "";
+  const pending = (async () => {
+    try {
+      const data = await apiGet("/api/materials");
+      domains.value = data?.domains || [];
+    } catch (err: any) {
+      loadError.value = err?.message || String(err);
+    }
+  })();
+  materialsInflight = pending;
   try {
-    const data = await apiGet("/api/materials");
-    domains.value = data?.domains || [];
-  } catch (err: any) {
-    loadError.value = err?.message || String(err);
+    await pending;
+  } finally {
+    if (materialsInflight === pending) materialsInflight = null;
   }
+}
+
+function ensureMaterialsLoaded() {
+  if (domains.value.length) return;
+  void loadMaterials();
 }
 
 async function body(opts: { forStart?: boolean } = {}) {
@@ -1636,7 +1607,7 @@ async function start() {
     await apiPost("/api/run/start", await body({ forStart: true }));
     emit("refresh");
   } catch (err: any) {
-    alert(err?.message || String(err));
+    toastError(err);
   }
 }
 async function resume() {
@@ -1648,7 +1619,7 @@ async function startQueuedTasks(ids: string[]) {
   const taskIds = [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
   if (!taskIds.length) return;
   if (running.value) {
-    alert("已有生产任务在运行");
+    toastWarning("已有生产任务在运行");
     return;
   }
   try {
@@ -1659,7 +1630,7 @@ async function startQueuedTasks(ids: string[]) {
     selectedTaskIds.value = selectedTaskIds.value.filter((id) => !taskIds.includes(id));
     emit("refresh");
   } catch (err: any) {
-    alert(err?.message || String(err));
+    toastError(err);
   }
 }
 async function stop() {
@@ -1696,7 +1667,10 @@ function persistBoardFilters(immediate = false) {
 }
 
 onMounted(async () => {
-  if (props.snapshot?.workspace) loadMaterials();
+  // Task 单文档/多文档 tags join against /api/materials. Do not wait for
+  // snapshot.workspace: first board paint often still has the empty placeholder
+  // snapshot, while the backend workspace is already open.
+  ensureMaterialsLoaded();
   try {
     const prefs = await apiGet("/api/ui-prefs");
     const saved = boardStatusesFromPrefs(prefs);
@@ -1720,38 +1694,33 @@ onMounted(async () => {
 
 watch(selectedStatuses, () => persistBoardFilters(false), { deep: true });
 watch([dateFrom, dateTo, questionType], () => persistBoardFilters(false));
+onActivated(() => ensureMaterialsLoaded());
 onDeactivated(() => persistBoardFilters(true));
 onUnmounted(() => persistBoardFilters(true));
 </script>
 
 <style scoped>
+.controls-card,
 .card {
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 16px 18px;
   margin-bottom: 16px;
 }
 .controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px 16px;
   align-items: flex-end;
 }
-.controls-actions {
-  display: inline-flex;
+.controls :deep(.el-form-item) {
+  margin-bottom: 8px;
+}
+.controls-actions :deep(.el-form-item__content) {
   flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
 }
-.controls .rule-hint {
-  flex-basis: 100%;
+.rule-hint {
   margin: 0;
   line-height: 1.5;
 }
 .status-bar {
-  position: relative;
-  z-index: 2;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1773,77 +1742,21 @@ onUnmounted(() => persistBoardFilters(true));
   align-items: center;
   margin-left: auto;
 }
-.status-actions :deep(.n-dropdown-trigger) {
-  display: inline-flex;
-  align-items: center;
-}
 .date-filter-group {
   display: inline-flex;
   flex-wrap: nowrap;
   align-items: center;
   gap: 10px;
 }
-.date-filter-group .clear-dates {
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-.filter-wrap {
-  position: relative;
-  display: inline-flex;
-}
 .date-filter {
   display: inline-flex;
-  flex-direction: row;
   align-items: center;
   gap: 6px;
   font-size: 13px;
   color: var(--muted);
-  padding-bottom: 0;
 }
-.date-filter :deep(.n-date-picker) {
-  width: 148px;
-}
-.search-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--muted);
-}
-.search-field.inline-search {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  padding-bottom: 0;
-}
-.search-field input[type="search"] {
+.search-input {
   width: min(260px, 48vw);
-  min-width: 160px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--primary-dark);
-  background: #fff;
-}
-.filter-wrap > button.active {
-  border-color: var(--primary);
-  color: var(--primary);
-  background: #ebf8ff;
-}
-.filter-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 20;
-  min-width: 260px;
-  max-width: min(360px, 80vw);
-  max-height: min(420px, 60vh);
-  overflow: auto;
-  padding: 12px 14px;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(26, 54, 93, 0.12);
 }
 .filter-panel-head {
   display: flex;
@@ -1874,67 +1787,12 @@ onUnmounted(() => persistBoardFilters(true));
 .status-row h2 {
   margin: 0;
 }
-.collapse-btn {
-  padding: 4px 10px;
-  font-size: 12px;
-}
 .check-row {
-  margin-bottom: 10px;
-}
-label {
-  display: flex;
-  flex-direction: column;
-  font-size: 13px;
-  color: var(--muted);
-  gap: 4px;
-}
-label.check,
-label.radio {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  padding-bottom: 0;
-}
-input[type="number"],
-select {
-  width: 120px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-button {
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--primary-dark);
-  border-radius: 8px;
-  padding: 8px 14px;
-  cursor: pointer;
-}
-.primary {
-  background: var(--primary);
-  color: #fff;
-  border-color: var(--primary);
-}
-.danger {
-  color: #c53030;
-  border-color: #feb2b2;
-}
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.batch-menu-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  margin-bottom: 8px;
 }
 .hint,
 .muted {
   color: var(--muted);
-  font-size: 13px;
-}
-.error {
-  color: #c53030;
   font-size: 13px;
 }
 .warn-hint {
@@ -1950,16 +1808,11 @@ h2 {
 .pack-list {
   max-height: 280px;
   overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.pack-list .col-pack-check {
-  width: 36px;
 }
 .pack-title {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
 }
@@ -1969,283 +1822,41 @@ h2 {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-.board-table {
-  table-layout: fixed;
-}
-.board-table th,
-.board-table td {
-  overflow: hidden;
-  vertical-align: middle;
-}
-.board-table .col-check {
-  width: 36px;
-}
-.board-table .col-status {
-  width: 86px;
-}
-.board-table .col-material {
-  width: 280px;
-}
-.board-table .col-stage {
-  width: 176px;
-  overflow: visible;
-}
-.board-table .col-pass {
-  width: 140px;
-}
 .pass-stack {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
   min-width: 0;
-  max-width: 100%;
-}
-.board-table .col-ended {
-  width: 124px;
-  white-space: nowrap;
-}
-.board-table .col-actions {
-  width: 76px;
-  white-space: nowrap;
-}
-.board-table .col-status :deep(.status),
-.board-table .col-pass :deep(.status) {
-  max-width: 100%;
-}
-.board-table .col-status :deep(.text),
-.board-table .col-pass :deep(.text) {
-  max-width: none;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-th,
-td {
-  text-align: left;
-  padding: 8px 6px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
 }
 .slug-cell {
   display: flex;
   flex-direction: column;
-  flex-wrap: nowrap;
   align-items: flex-start;
   gap: 4px;
   min-width: 0;
-  max-width: 100%;
 }
 .slug-tags {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 4px;
   min-width: 0;
-  max-width: 100%;
-}
-.domain-tag {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  padding: 0 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-}
-.domain-tag.tone-teal {
-  color: #0f766e;
-  background: #ccfbf1;
-}
-.domain-tag.tone-blue {
-  color: #1d4ed8;
-  background: #dbeafe;
-}
-.domain-tag.tone-green {
-  color: #166534;
-  background: #dcfce7;
-}
-.domain-tag.tone-amber {
-  color: #92400e;
-  background: #fef3c7;
-}
-.domain-tag.tone-rose {
-  color: #9f1239;
-  background: #ffe4e6;
-}
-.domain-tag.tone-slate {
-  color: #334155;
-  background: #e2e8f0;
-}
-.domain-tag.tone-cyan {
-  color: #0e7490;
-  background: #cffafe;
-}
-.domain-tag.tone-orange {
-  color: #c2410c;
-  background: #ffedd5;
-}
-.domain-tag.tone-indigo {
-  color: #3730a3;
-  background: #e0e7ff;
-}
-.domain-tag.tone-lime {
-  color: #3f6212;
-  background: #ecfccb;
 }
 .pack-name {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 13px;
   line-height: 1.35;
   color: var(--primary-dark);
-  min-width: 0;
-  max-width: 100%;
-  white-space: normal;
-  overflow: hidden;
   word-break: break-word;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
 }
-.meta-chip {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.4;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  border: 1px solid transparent;
-}
-.slug-tags .meta-chip,
-.pack-title .meta-chip {
-  padding: 0 6px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
-  letter-spacing: 0.01em;
-}
-.meta-chip.tone-progress {
-  color: #1d4ed8;
-  background: #dbeafe;
-  border-color: #bfdbfe;
-}
-.meta-chip.tone-neutral {
-  color: #334155;
-  background: #e2e8f0;
-  border-color: #cbd5e1;
-}
-.meta-chip.tone-pass {
-  color: #166534;
-  background: #dcfce7;
-  border-color: #bbf7d0;
-}
-.meta-chip.tone-fail {
-  color: #9f1239;
-  background: #ffe4e6;
-  border-color: #fecdd3;
-}
-.meta-chip.tone-warn {
-  color: #9a3412;
-  background: #ffedd5;
-  border-color: #fed7aa;
-}
-.pack-list .meta-chip {
-  margin-left: 0;
-  flex: 0 0 auto;
-  vertical-align: middle;
-}
-.ok {
-  color: #2f855a;
-}
-.warn {
-  color: #c05621;
+.clickable-tag {
+  cursor: pointer;
 }
 .ended {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
-}
-.action-menu-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--border);
-  background: #fff;
-  color: var(--primary-dark);
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  line-height: 1.3;
-  cursor: pointer;
-}
-.action-menu-btn:hover:not(:disabled) {
-  border-color: var(--primary);
-  color: var(--primary);
-  background: #ebf8ff;
-}
-.action-menu-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.action-caret {
-  font-size: 10px;
-  opacity: 0.7;
-}
-.review-chip {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 0 6px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.5;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  cursor: pointer;
-  background: #edf2f7;
-  color: var(--muted);
-}
-.review-chip.tone-pass {
-  color: #166534;
-  background: #dcfce7;
-  border-color: #bbf7d0;
-}
-.review-chip.tone-warn {
-  color: #9a3412;
-  background: #ffedd5;
-  border-color: #fed7aa;
-}
-.review-chip.tone-fail {
-  color: #9f1239;
-  background: #ffe4e6;
-  border-color: #fecdd3;
-}
-.review-chip.tone-pending {
-  color: #334155;
-  background: #e2e8f0;
-  border-color: #cbd5e1;
-}
-.review-chip.tone-abort {
-  color: #9a3412;
-  background: #ffedd5;
-  border-color: #fed7aa;
-}
-.review-chip.tone-running {
-  color: #1d4ed8;
-  background: #dbeafe;
-  border-color: #bfdbfe;
 }
 .review-verdict {
   font-weight: 600;
@@ -2277,95 +1888,4 @@ td {
   color: var(--muted);
   font-size: 13px;
 }
-.modal-wide {
-  width: min(640px, 100%);
-  max-height: min(80vh, 720px);
-  overflow: auto;
-}
-.summary-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-  margin: 10px 0;
-}
-.summary-table th,
-.summary-table td {
-  text-align: left;
-  padding: 6px 4px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-}
-.summary-table tr.clickable {
-  cursor: pointer;
-}
-.summary-table tr.clickable:hover {
-  background: #ebf8ff;
-}
-button.link {
-  border: 0;
-  background: transparent;
-  color: var(--primary);
-  padding: 0;
-  font-size: 12px;
-  cursor: pointer;
-}
-button.danger-link,
-button.link.danger-link {
-  color: #c53030;
-}
-button.link:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(26, 54, 93, 0.35);
-  padding: 16px;
-}
-.modal-card {
-  width: min(420px, 100%);
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 18px 20px;
-  box-shadow: 0 12px 32px rgba(26, 54, 93, 0.18);
-}
-.modal-card h3 {
-  margin: 0 0 8px;
-  color: var(--primary-dark);
-  font-size: 16px;
-}
-.modal-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 12px 0;
-  font-size: 13px;
-  color: var(--muted);
-}
-.modal-field textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  font: inherit;
-  color: var(--primary-dark);
-  resize: vertical;
-}
-.modal-check {
-  margin-bottom: 8px;
-}
-.modal-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 14px;
-}
-
 </style>
