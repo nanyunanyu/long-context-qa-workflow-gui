@@ -130,6 +130,62 @@ export function compareBoardTasks(a: any, b: any): number {
   return String(a?.id || "").localeCompare(String(b?.id || ""));
 }
 
+/** Catalog domain_key → board display name (materials/<key>/CATALOG.json `domain`). */
+export const DOMAIN_LABELS: Record<string, string> = {
+  academic: "学术",
+  user_guides: "用户指南",
+  software_engineering: "软件与工程",
+  literature: "文学",
+  detective: "侦探小说",
+  language: "语言",
+  legal: "法律",
+  tabular: "表格数据",
+  finance: "金融",
+  event_ordering: "事件排序",
+  news: "新闻",
+  government: "政府事务",
+  example: "示例",
+};
+
+/** Early queue slugs used a shorter alias than the materials folder name. */
+const DOMAIN_KEY_ALIASES: Record<string, string> = {
+  user_guide: "user_guides",
+  "user-guide": "user_guides",
+};
+
+function canonicalDomainKey(raw: string): string {
+  const key = String(raw || "").trim();
+  if (!key) return "";
+  if (DOMAIN_LABELS[key]) return key;
+  return DOMAIN_KEY_ALIASES[key] || key;
+}
+
+function domainKeyFromSlug(slug: string): { domainKey: string; pack: string } {
+  const s = String(slug || "").trim();
+  if (!s) return { domainKey: "", pack: "" };
+  const keys = [...Object.keys(DOMAIN_LABELS), ...Object.keys(DOMAIN_KEY_ALIASES)].sort(
+    (a, b) => b.length - a.length
+  );
+  for (const key of keys) {
+    if (s === key || s.startsWith(`${key}-`) || s.startsWith(`${key}_`)) {
+      return {
+        domainKey: canonicalDomainKey(key),
+        pack: s.slice(key.length).replace(/^[-_]+/, ""),
+      };
+    }
+  }
+  return { domainKey: "", pack: s };
+}
+
+export function domainDisplayLabel(domainKey: string, taskDomain?: string): string {
+  const mapped = DOMAIN_LABELS[domainKey];
+  if (mapped) return mapped;
+  const raw = String(taskDomain || "").trim();
+  if (raw && /[\u4e00-\u9fff]/.test(raw)) return raw;
+  if (domainKey && domainKey !== "unknown") return domainKey;
+  return "未分类";
+}
+
 /** Split queue slug / materials_pack into domain tag + pack name (no hyphen join). */
 export function taskSlugParts(task: any): { domainKey: string; domainLabel: string; pack: string } {
   const packPath = String(task?.materials_pack || "").trim();
@@ -138,23 +194,22 @@ export function taskSlugParts(task: any): { domainKey: string; domainLabel: stri
   if (packPath.startsWith("materials/")) {
     const parts = packPath.split("/").filter(Boolean);
     if (parts.length >= 3) {
-      domainKey = parts[1];
+      domainKey = canonicalDomainKey(parts[1]);
       pack = parts.slice(2).join("/");
     }
   }
   const slug = String(task?.slug || "").trim();
   if ((!domainKey || !pack) && slug) {
-    // Fallback: first segment before '-' is usually domain_key (may be wrong for multi-underscore keys).
-    const i = slug.indexOf("-");
-    if (i > 0) {
-      domainKey = domainKey || slug.slice(0, i);
-      pack = pack || slug.slice(i + 1);
-    } else {
-      pack = pack || slug;
-    }
+    const fromSlug = domainKeyFromSlug(slug);
+    domainKey = domainKey || fromSlug.domainKey;
+    pack = pack || fromSlug.pack;
   }
-  const domainLabel = String(task?.domain || "").trim() || domainKey || "—";
-  return { domainKey: domainKey || "unknown", domainLabel, pack: pack || slug || "—" };
+  domainKey = domainKey || "unknown";
+  return {
+    domainKey,
+    domainLabel: domainDisplayLabel(domainKey, task?.domain),
+    pack: pack || slug || "—",
+  };
 }
 
 const DOMAIN_TAG_TONES = [
@@ -355,8 +410,12 @@ export function countByDomain(tasks: any[]): { key: string; label: string; count
   for (const task of tasks) {
     const parts = taskSlugParts(task);
     const cur = map.get(parts.domainKey);
-    if (cur) cur.count += 1;
-    else map.set(parts.domainKey, { key: parts.domainKey, label: parts.domainLabel, count: 1 });
+    if (cur) {
+      cur.count += 1;
+      if (DOMAIN_LABELS[parts.domainKey]) cur.label = DOMAIN_LABELS[parts.domainKey];
+    } else {
+      map.set(parts.domainKey, { key: parts.domainKey, label: parts.domainLabel, count: 1 });
+    }
   }
   return [...map.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "zh"));
 }

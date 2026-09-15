@@ -30,40 +30,45 @@
           <div v-for="group in visibleGroups" :key="group.name" class="summary-group">
             <span class="summary-label">{{ group.name }}</span>
             <div class="summary-pills">
-              <span v-for="item in group.items" :key="item.key" class="summary-pill">
+              <template v-for="item in group.items" :key="item.key">
                 <template v-for="sel in [chipSelectState(item)]" :key="item.key + '-sel'">
-                  <el-checkbox
+                  <el-check-tag
                     v-if="sel"
-                    size="small"
-                    :model-value="sel.checked"
-                    :indeterminate="sel.indeterminate"
+                    class="summary-pill"
+                    :class="{ 'is-indeterminate': sel.indeterminate }"
+                    :checked="sel.checked"
                     :disabled="sel.disabled"
-                    @change="onChipChange(item, $event)"
-                    @click.stop
-                  />
+                    :title="chipTitle(sel)"
+                    @change="(checked) => onChipChange(item, checked)"
+                  >
+                    <StatusIcon v-if="item.state" :state="item.state" />
+                    <strong>{{ item.count }}</strong>
+                  </el-check-tag>
+                  <span v-else class="summary-pill">
+                    <StatusIcon v-if="item.state" :state="item.state" />
+                    <el-tag
+                      v-else-if="item.domainKey"
+                      size="small"
+                      class="domain-tag"
+                      :class="'tone-' + domainTagTone(item.domainKey)"
+                      :title="item.domainKey"
+                    >
+                      {{ item.domainLabel || item.label || item.domainKey }}
+                    </el-tag>
+                    <el-tag
+                      v-else-if="item.chipTone"
+                      size="small"
+                      :class="'tone-' + item.chipTone"
+                      :type="chipTagType(item.chipTone)"
+                      effect="light"
+                    >
+                      {{ item.label }}
+                    </el-tag>
+                    <span v-else>{{ item.label }}</span>
+                    <strong>{{ item.count }}</strong>
+                  </span>
                 </template>
-                <StatusIcon v-if="item.state" :state="item.state" />
-                <el-tag
-                  v-else-if="item.domainKey"
-                  size="small"
-                  class="domain-tag"
-                  :class="'tone-' + domainTagTone(item.domainKey)"
-                  :title="item.domainKey"
-                >
-                  {{ item.domainLabel || item.label || item.domainKey }}
-                </el-tag>
-                <el-tag
-                  v-else-if="item.chipTone"
-                  size="small"
-                  :class="'tone-' + item.chipTone"
-                  :type="chipTagType(item.chipTone)"
-                  effect="light"
-                >
-                  {{ item.label }}
-                </el-tag>
-                <span v-else>{{ item.label }}</span>
-                <strong>{{ item.count }}</strong>
-              </span>
+              </template>
             </div>
           </div>
         </div>
@@ -118,6 +123,13 @@ const emit = defineEmits<{
 function chipSelectState(item: SummaryChip): SummaryChipSelectState | null {
   if (!item.state) return null;
   return props.itemSelectStates?.[item.key] ?? null;
+}
+
+function chipTitle(sel: SummaryChipSelectState): string {
+  if (sel.disabled) return "当前状态没有可勾选任务";
+  if (sel.indeterminate) return "部分已选，点击全选该类";
+  if (sel.checked) return "点击取消勾选该类";
+  return "点击勾选该类";
 }
 
 function onChipChange(item: SummaryChip, checked: string | number | boolean) {
@@ -214,6 +226,35 @@ const visibleGroups = computed(() => {
   color: var(--primary-dark);
   line-height: 1.3;
 }
+.summary-pill.el-check-tag {
+  height: auto;
+  font-weight: inherit;
+}
+.summary-pill.el-check-tag:not(.is-disabled) {
+  cursor: pointer;
+}
+.summary-pill.el-check-tag:hover:not(.is-disabled):not(.is-checked):not(.is-indeterminate) {
+  background: #fff;
+  color: var(--primary-dark);
+  border-color: var(--el-color-primary-light-5);
+}
+.summary-pill.el-check-tag.is-checked,
+.summary-pill.el-check-tag.is-checked:hover {
+  background: var(--el-color-primary-light-9);
+  color: var(--primary-dark);
+  border-color: var(--el-color-primary);
+}
+.summary-pill.el-check-tag.is-indeterminate,
+.summary-pill.el-check-tag.is-indeterminate:hover {
+  background: var(--el-color-primary-light-9);
+  color: var(--primary-dark);
+  border-color: var(--el-color-primary);
+  border-style: dashed;
+}
+.summary-pill.el-check-tag.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
 .summary-pill strong {
   font-variant-numeric: tabular-nums;
   font-weight: 650;
@@ -226,13 +267,5 @@ const visibleGroups = computed(() => {
   width: 14px;
   height: 16px;
   flex-basis: 14px;
-}
-.summary-pill :deep(.el-checkbox) {
-  height: auto;
-  margin-right: 0;
-  --el-checkbox-height: 14px;
-}
-.summary-pill :deep(.el-checkbox__label) {
-  display: none;
 }
 </style>
