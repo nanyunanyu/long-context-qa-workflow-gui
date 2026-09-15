@@ -997,6 +997,13 @@ class MaterialSelectTests(unittest.TestCase):
             RunBody(question_type="essay")
         pinned = RunBody(task_ids=["t-1", "t-2"], limit=2)
         self.assertEqual(pinned.task_ids, ["t-1", "t-2"])
+        stop = RunBody(stop_at="generate")
+        self.assertEqual(stop.stop_at, "generate")
+        self.assertEqual(RunBody().stop_at, "package")
+        self.assertFalse(RunBody().honor_task_stop_at)
+        self.assertTrue(RunBody(honor_task_stop_at=True).honor_task_stop_at)
+        with self.assertRaises(ValidationError):
+            RunBody(stop_at="rollout")
 
     def test_claim_one_passes_task_id(self) -> None:
         from pathlib import Path
@@ -1016,12 +1023,18 @@ class MaterialSelectTests(unittest.TestCase):
                 "tasks": [
                     {"id": "t-q", "slug": "demo", "status": "queued"},
                     {"id": "t-p", "slug": "done", "status": "passed"},
+                    {"id": "t-a", "slug": "parked", "status": "awaiting_eval", "reached_step": "generate"},
                 ]
             }
         )
         by_id = {t["id"]: t for t in queue["tasks"]}
         self.assertTrue(by_id["t-q"]["can_start"])
         self.assertFalse(by_id["t-p"]["can_start"])
+        self.assertFalse(by_id["t-q"]["can_continue"])
+        self.assertFalse(by_id["t-p"]["can_continue"])
+        self.assertFalse(by_id["t-a"]["can_start"])
+        self.assertTrue(by_id["t-a"]["can_continue"])
+        self.assertEqual(by_id["t-a"]["continue_targets"], ["judge", "package"])
 
 
 class UiPrefsAndQueueOpsTests(unittest.TestCase):
@@ -1053,6 +1066,7 @@ class UiPrefsAndQueueOpsTests(unittest.TestCase):
                 self.assertEqual(prefs["board"]["date_from"], "2026-09-07")
                 self.assertEqual(prefs["board"]["date_to"], "2026-09-08")
                 self.assertEqual(prefs["board"]["question_type"], "auto")
+                self.assertEqual(prefs["board"]["stop_at"], "package")
                 again = ui_prefs.get_ui_prefs()
                 self.assertEqual(again["materials"]["selected_domains"], ["academic"])
                 self.assertEqual(again["materials"]["selected_audits"], ["pass", "none"])
@@ -1210,14 +1224,86 @@ class BoardOpsTests(unittest.TestCase):
         self.assertFalse(can_requeue({"status": "passed", "avg_accuracy": 0.375}))
         self.assertFalse(can_requeue({"status": "borderline_50", "avg_accuracy": 0.5}))
         self.assertFalse(can_cancel({"status": "borderline_50", "avg_accuracy": 0.5}))
+        self.assertTrue(can_cancel({"status": "awaiting_eval"}))
+        self.assertFalse(can_requeue({"status": "awaiting_eval"}))
 
     def test_can_start_queued_only(self):
-        from desktop.backend.queue_ops import can_start
+        from desktop.backend.queue_ops import can_continue, can_start, continue_targets
 
         self.assertTrue(can_start({"status": "queued"}))
         self.assertFalse(can_start({"status": "claimed"}))
         self.assertFalse(can_start({"status": "passed"}))
         self.assertFalse(can_start({"status": "cancelled"}))
+        self.assertFalse(can_start({"status": "awaiting_eval"}))
+        self.assertTrue(can_continue({"status": "awaiting_eval", "reached_step": "generate"}))
+        self.assertEqual(
+            continue_targets({"status": "awaiting_eval", "reached_step": "generate"}),
+            ["judge", "package"],
+        )
+        self.assertEqual(
+            continue_targets({"status": "awaiting_package", "reached_step": "judge"}),
+            ["package"],
+        )
+        self.assertFalse(can_continue({"status": "passed"}))
+
+    def test_continue_does_not_wipe_work_and_rejects_backward(self):
+        from desktop.backend.queue_ops import continue_task
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sample = root / "work" / "samples" / "100-demo"
+            raw = sample / "work" / "candidates" / "candidate-01" / "work" / "raw"
+            raw.mkdir(parents=True)
+            (raw / "qa_parsed.json").write_text('{"ok": true}', encoding="utf-8")
+            queue_path = root / "queue" / "queue.json"
+            queue_path.parent.mkdir(parents=True)
+            queue_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "tasks": [
+                            {
+                                "id": "t-chk",
+                                "slug": "demo",
+                                "status": "awaiting_eval",
+                                "reached_step": "generate",
+                                "stop_at": "generate",
+                                "sample_dir": "work/samples/100-demo",
+                                "history": [],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            def fake_qw(_workspace, args):
+                self.assertEqual(args[0], "continue")
+                task_id = args[args.index("--task-id") + 1]
+                stop = args[args.index("--stop-at") + 1]
+                q = json.loads(queue_path.read_text(encoding="utf-8"))
+                for t in q["tasks"]:
+                    if t["id"] == task_id:
+                        t["status"] = "queued"
+                        t["stop_at"] = stop
+                        queue_path.write_text(json.dumps(q, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                        return t
+                raise RuntimeError("missing")
+
+            from desktop.backend import queue_ops
+
+            with patch.object(queue_ops, "_qw", side_effect=fake_qw):
+                with self.assertRaises(PermissionError):
+                    continue_task(root, task_id="t-chk", stop_at="generate")
+                result = continue_task(root, task_id="t-chk", stop_at="judge")
+            self.assertTrue(result["ok"])
+            self.assertTrue((raw / "qa_parsed.json").is_file())
+            task = json.loads(queue_path.read_text(encoding="utf-8"))["tasks"][0]
+            self.assertEqual(task["status"], "queued")
+            self.assertEqual(task["stop_at"], "judge")
 
     def test_can_requeue_blocked_by_pack_sibling(self):
         from desktop.backend.queue_ops import can_requeue, find_pack_sibling

@@ -22,6 +22,17 @@
             <el-option label="自动" value="auto" />
           </el-select>
         </el-form-item>
+        <el-form-item label="本批终点">
+          <el-select v-model="stopAt" :disabled="running" style="width: 148px">
+            <el-option
+              v-for="opt in STOP_AT_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+              :title="opt.hint"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item>
           <el-checkbox v-model="preferCold" :disabled="materialMode === 'select'">优先冷源</el-checkbox>
         </el-form-item>
@@ -30,8 +41,8 @@
         </el-form-item>
         <el-form-item class="controls-actions">
           <el-button type="primary" :disabled="running" @click="start">开始</el-button>
-          <el-button :disabled="!running" @click="stop">停止</el-button>
-          <el-button type="danger" :disabled="!running" @click="interrupt">立即中断</el-button>
+          <el-button :disabled="!running" @click="stop">暂停</el-button>
+          <el-button type="danger" :disabled="!running" @click="interrupt">中断</el-button>
           <el-button :disabled="running" @click="resume">继续</el-button>
         </el-form-item>
       </el-form>
@@ -443,6 +454,38 @@
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="continueDialog.open"
+      :title="continueDialog.batch ? '批量继续后续' : '继续后续'"
+      width="440px"
+      :close-on-click-modal="!(statusBusy || batchBusy)"
+    >
+      <p class="muted">
+        <template v-if="continueDialog.batch">
+          将对已选 <strong>{{ continueDialog.taskIds.length }}</strong> 条已出题/已判分任务续跑到所选终点，不重新出题。
+        </template>
+        <template v-else>
+          任务 <strong>{{ continueDialog.slug }}</strong>：从当前阶段接着往后跑，工作区保留。
+        </template>
+      </p>
+      <el-form label-position="top">
+        <el-form-item label="跑到">
+          <el-radio-group v-model="continueDialog.stopAt">
+            <el-radio v-for="opt in continueDialog.targets" :key="opt" :value="opt">
+              {{ CONTINUE_STOP_AT_OPTIONS.find((o) => o.value === opt)?.label || opt }}
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+      </el-form>
+      <el-alert v-if="continueDialog.error" type="error" :title="continueDialog.error" show-icon :closable="false" />
+      <template #footer>
+        <el-button :disabled="Boolean(statusBusy) || batchBusy" @click="continueDialog.open = false">取消</el-button>
+        <el-button type="primary" :disabled="Boolean(statusBusy) || batchBusy || !continueDialog.stopAt" @click="submitContinue">
+          {{ continueDialog.batch ? "确认批量续跑" : "确认续跑" }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="packAuditDialog.open" title="材料审核结果" width="640px">
       <p class="muted">
         材料包 <strong>{{ packAuditDialog.pack }}</strong>
@@ -511,6 +554,8 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watc
 import { ArrowDown, Search } from "@element-plus/icons-vue";
 import {
   ALL_QUEUE_STATUSES,
+  CONTINUE_STOP_AT_OPTIONS,
+  STOP_AT_OPTIONS,
   QUEUE_STATUS_OPTIONS,
   apiGet,
   apiPost,
@@ -564,6 +609,11 @@ const questionType = ref<"short_answer" | "multiple_choice" | "auto">(
   ["short_answer", "multiple_choice", "auto"].includes(String(props.initialPrefs?.board?.question_type || ""))
     ? (props.initialPrefs.board.question_type as "short_answer" | "multiple_choice" | "auto")
     : "short_answer"
+);
+const stopAt = ref<"generate" | "judge" | "package">(
+  ["generate", "judge", "package"].includes(String(props.initialPrefs?.board?.stop_at || ""))
+    ? (props.initialPrefs.board.stop_at as "generate" | "judge" | "package")
+    : "package"
 );
 const preferCold = ref(true);
 const retryTechnical = ref(false);
@@ -671,6 +721,15 @@ const rejectDialog = ref({
   pendingReview: false,
   batch: false,
 });
+const continueDialog = ref({
+  open: false,
+  taskIds: [] as string[],
+  slug: "",
+  stopAt: "package" as "judge" | "package",
+  targets: ["package"] as Array<"judge" | "package">,
+  error: "",
+  batch: false,
+});
 const packAuditDialog = ref({
   open: false,
   pack: "",
@@ -757,9 +816,23 @@ function taskCanStart(task: any): boolean {
   return Boolean(task?.can_start) || String(task?.status || "") === "queued";
 }
 
+function taskCanContinue(task: any): boolean {
+  return Boolean(task?.can_continue) || ["awaiting_eval", "awaiting_package"].includes(String(task?.status || ""));
+}
+
+function continueTargetsFor(task: any): Array<"judge" | "package"> {
+  const raw = Array.isArray(task?.continue_targets) ? task.continue_targets : [];
+  const allowed = raw.filter((v: string) => v === "judge" || v === "package");
+  if (allowed.length) return allowed;
+  if (String(task?.status || "") === "awaiting_eval") return ["judge", "package"];
+  if (String(task?.status || "") === "awaiting_package") return ["package"];
+  return [];
+}
+
 function taskSelectable(task: any): boolean {
   return Boolean(
     taskCanStart(task) ||
+      taskCanContinue(task) ||
       task?.can_requeue ||
       task?.can_cancel ||
       task?.can_review_pass ||
@@ -796,6 +869,12 @@ const selectedStartIds = computed(() =>
   selectedTaskIds.value.filter((id) => {
     const t = tasks.value.find((x: any) => x.id === id);
     return taskCanStart(t);
+  })
+);
+const selectedContinueIds = computed(() =>
+  selectedTaskIds.value.filter((id) => {
+    const t = tasks.value.find((x: any) => x.id === id);
+    return taskCanContinue(t);
   })
 );
 const allFilteredSelected = computed(
@@ -863,6 +942,7 @@ const batchMenuDisabled = computed(
     batchBusy.value ||
     !(
       selectedStartIds.value.length ||
+      selectedContinueIds.value.length ||
       selectedRequeueIds.value.length ||
       selectedCancelIds.value.length ||
       selectedReviewPassIds.value.length ||
@@ -872,7 +952,7 @@ const batchMenuDisabled = computed(
 
 const questionTypeHint = computed(() => {
   const shared =
-    "出题语言与材料一致（英文材料用英语题/金标，中文材料用中文）。判分覆盖金标要点且无错误内容即可，不必字字对应。本批选项只作用于新入队任务。";
+    "出题语言与材料一致（英文材料用英语题/金标，中文材料用中文）。判分覆盖金标要点且无错误内容即可，不必字字对应。本批终点与出题类型作用于本次开始领取的任务。";
   if (questionType.value === "multiple_choice") {
     return `${shared} 本批出选择题：单选四选一，或多选（2–3 个正确项，答案如 A,C）。干扰项须是近形，禁止以上都不是/全选。`;
   }
@@ -1007,12 +1087,18 @@ function withBatchCount(label: string, count: number): string {
 }
 
 const batchActionOptions = computed<MenuAction[]>(() => [
-  {
-    label: withBatchCount("批量开始", selectedStartIds.value.length),
-    key: "start",
-    disabled: running.value || batchBusy.value || !selectedStartIds.value.length,
-    title: "领取已选排队任务并开始生产，不再挑选新材料",
-  },
+    {
+      label: withBatchCount("批量开始", selectedStartIds.value.length),
+      key: "start",
+      disabled: running.value || batchBusy.value || !selectedStartIds.value.length,
+      title: "领取已选排队任务并开始生产，不再挑选新材料",
+    },
+    {
+      label: withBatchCount("批量继续后续", selectedContinueIds.value.length),
+      key: "continue",
+      disabled: running.value || batchBusy.value || !selectedContinueIds.value.length,
+      title: "对已选出题/判分停住的任务续跑到更后的终点，不清除工作区",
+    },
   {
     label: withBatchCount("批量改回排队", selectedRequeueIds.value.length),
     key: "requeue",
@@ -1053,6 +1139,10 @@ function onBatchActionSelect(key: string | number) {
     void startQueuedTasks(selectedStartIds.value);
     return;
   }
+  if (action === "continue") {
+    openContinueDialog(selectedContinueIds.value, true);
+    return;
+  }
   if (action === "requeue") {
     void batchChangeStatus("queued");
     return;
@@ -1077,6 +1167,7 @@ function onBatchActionSelect(key: string | number) {
 function taskHasActions(task: any): boolean {
   return Boolean(
     taskCanStart(task) ||
+      taskCanContinue(task) ||
       task?.can_human_reject ||
       task?.can_review_pass ||
       task?.can_requeue ||
@@ -1092,6 +1183,14 @@ function taskActionOptions(task: any): MenuAction[] {
       key: "start",
       disabled: running.value || batchBusy.value,
       title: "领取这条排队任务并开始生产，不再挑选新材料",
+    });
+  }
+  if (taskCanContinue(task)) {
+    opts.push({
+      label: "继续后续",
+      key: "continue",
+      disabled: running.value || batchBusy.value,
+      title: "从已完成阶段接着跑到更后的终点，不重新出题",
     });
   }
   if (task.can_human_reject) {
@@ -1134,6 +1233,10 @@ function onTaskActionSelect(key: string | number, task: any) {
   const action = String(key);
   if (action === "start") {
     void startQueuedTasks([task.id]);
+    return;
+  }
+  if (action === "continue") {
+    openContinueDialog([task.id], false);
     return;
   }
   if (action === "human_reject") {
@@ -1643,6 +1746,7 @@ async function body(opts: { forStart?: boolean } = {}) {
     prefer_cold: preferCold.value,
     retry_technical: retryTechnical.value,
     question_type: questionType.value,
+    stop_at: stopAt.value,
   };
   if (opts.forStart && materialMode.value === "select") {
     const packs = effectiveSelectedPacks.value;
@@ -1692,6 +1796,64 @@ async function startQueuedTasks(ids: string[]) {
     toastError(err);
   }
 }
+
+function openContinueDialog(ids: string[], batch: boolean) {
+  const taskIds = [...new Set(ids.map((id) => String(id || "").trim()).filter(Boolean))];
+  const rows = taskIds
+    .map((id) => tasks.value.find((t: any) => t.id === id))
+    .filter((t: any) => t && taskCanContinue(t));
+  if (!rows.length) return;
+  let targets = continueTargetsFor(rows[0]);
+  for (const row of rows.slice(1)) {
+    const next = new Set(continueTargetsFor(row));
+    targets = targets.filter((t) => next.has(t));
+  }
+  if (!targets.length) {
+    toastWarning("所选任务没有共同的后续终点");
+    return;
+  }
+  const stop = targets.includes("package") ? "package" : targets[0];
+  continueDialog.value = {
+    open: true,
+    taskIds,
+    slug: String(rows[0]?.slug || rows[0]?.id || ""),
+    stopAt: stop,
+    targets,
+    error: "",
+    batch,
+  };
+}
+
+async function submitContinue() {
+  const ids = [...continueDialog.value.taskIds];
+  const stop = continueDialog.value.stopAt;
+  if (!ids.length || !stop) return;
+  if (running.value) {
+    toastWarning("已有生产任务在运行");
+    return;
+  }
+  batchBusy.value = continueDialog.value.batch;
+  statusBusy.value = continueDialog.value.batch ? "batch" : ids[0];
+  continueDialog.value.error = "";
+  try {
+    const continued = await apiPost("/api/queue/tasks/continue", { task_ids: ids, stop_at: stop });
+    const payload = await body();
+    payload.task_ids = continued?.updated || ids;
+    payload.limit = (payload.task_ids as string[]).length;
+    payload.stop_at = stop;
+    payload.honor_task_stop_at = true;
+    await apiPost("/api/run/resume", payload);
+    selectedTaskIds.value = selectedTaskIds.value.filter((id) => !ids.includes(id));
+    continueDialog.value.open = false;
+    emit("refresh");
+  } catch (err: any) {
+    continueDialog.value.error = err?.message || String(err);
+    toastError(err);
+  } finally {
+    batchBusy.value = false;
+    statusBusy.value = null;
+  }
+}
 async function stop() {
   await apiPost("/api/run/stop");
   emit("refresh");
@@ -1709,6 +1871,7 @@ function persistBoardFilters(immediate = false) {
       date_from: dateFrom.value || null,
       date_to: dateTo.value || null,
       question_type: questionType.value,
+      stop_at: stopAt.value,
     },
   };
   const run = () => {
@@ -1740,6 +1903,10 @@ onMounted(async () => {
     if (savedType === "short_answer" || savedType === "multiple_choice" || savedType === "auto") {
       questionType.value = savedType;
     }
+    const savedStop = String(prefs?.board?.stop_at || "");
+    if (savedStop === "generate" || savedStop === "judge" || savedStop === "package") {
+      stopAt.value = savedStop;
+    }
     if (typeof prefs?.board?.materials_collapsed === "boolean") {
       materialsCollapsed.value = prefs.board.materials_collapsed;
     }
@@ -1752,7 +1919,7 @@ onMounted(async () => {
 });
 
 watch(selectedStatuses, () => persistBoardFilters(false), { deep: true });
-watch([dateFrom, dateTo, questionType], () => persistBoardFilters(false));
+watch([dateFrom, dateTo, questionType, stopAt], () => persistBoardFilters(false));
 onActivated(() => ensureMaterialsLoaded());
 onDeactivated(() => persistBoardFilters(true));
 onUnmounted(() => persistBoardFilters(true));

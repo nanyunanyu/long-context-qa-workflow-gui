@@ -8,6 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from workflow.stop_at import (
+    CHECKPOINT_STATUSES,
+    continue_targets as stop_at_continue_targets,
+    is_later_stop_at,
+    normalize_stop_at,
+    reached_step_for_status,
+)
+
 CONTENT_FAIL_MARKERS = (
     "precheck_failed",
     "technical_failed",
@@ -169,13 +177,32 @@ def find_pack_sibling(queue: dict[str, Any], task: dict[str, Any]) -> dict[str, 
 
 
 def can_cancel(task: dict[str, Any]) -> bool:
-    """Only non-accuracy failures (not already cancelled)."""
+    """Non-accuracy failures, or parked checkpoints the user wants to abandon."""
+    if str(task.get("status") or "") in CHECKPOINT_STATUSES:
+        return True
     return is_non_accuracy_failure(task)
 
 
 def can_start(task: dict[str, Any]) -> bool:
     """Queued tasks can be claimed and produced without staging new packs."""
     return str(task.get("status") or "") == "queued"
+
+
+def task_reached_step(task: dict[str, Any]) -> str | None:
+    reached = str(task.get("reached_step") or "").strip().lower()
+    if reached in {"generate", "judge", "package"}:
+        return reached
+    return reached_step_for_status(task.get("status"))
+
+
+def continue_targets(task: dict[str, Any]) -> list[str]:
+    if str(task.get("status") or "") not in CHECKPOINT_STATUSES:
+        return []
+    return list(stop_at_continue_targets(task_reached_step(task)))
+
+
+def can_continue(task: dict[str, Any]) -> bool:
+    return bool(continue_targets(task))
 
 
 def can_human_reject(task: dict[str, Any]) -> bool:
@@ -362,7 +389,7 @@ def set_task_status(
             raise PermissionError("task cannot be requeued")
     elif status == "cancelled":
         if not can_cancel(task):
-            raise PermissionError("only non-accuracy gate failures can be cancelled")
+            raise PermissionError("only non-accuracy gate failures or checkpoints can be cancelled")
         # Cancelling a duplicate loser is always allowed when can_cancel is true.
         # Also allow cancel of accuracy failures? unchanged.
     row = _qw(
@@ -402,7 +429,10 @@ def set_task_status(
         materials = _reset_pack_ready(workspace, task.get("materials_pack"))
         row = next((t for t in (queue2.get("tasks") or []) if t.get("id") == task_id), row)
         return {"task": row, "materials": materials, "sample_reset": sample_reset}
-    return {"task": row, "materials": None}
+    materials = None
+    if str(task.get("status") or "") in CHECKPOINT_STATUSES:
+        materials = _reset_pack_ready(workspace, task.get("materials_pack"))
+    return {"task": row, "materials": materials}
 
 
 def set_tasks_status(
@@ -428,6 +458,48 @@ def set_tasks_status(
         "updated": updated,
         "errors": errors,
         "count": len(updated),
+    }
+
+
+def continue_task(workspace: Path, *, task_id: str, stop_at: str) -> dict[str, Any]:
+    """Requeue a checkpointed task to a later stop_at without wiping work."""
+    target = normalize_stop_at(stop_at)
+    queue = read_queue(workspace)
+    task = next((t for t in (queue.get("tasks") or []) if isinstance(t, dict) and t.get("id") == task_id), None)
+    if not task:
+        raise KeyError(f"task not found: {task_id}")
+    if not can_continue(task):
+        raise PermissionError("task is not a checkpoint that can continue")
+    if target not in continue_targets(task):
+        allowed = ", ".join(continue_targets(task)) or "none"
+        raise PermissionError(f"stop_at={target} is not later than reached; allowed: {allowed}")
+    if not is_later_stop_at(task_reached_step(task), target):
+        raise PermissionError(f"stop_at={target} must be later than {task_reached_step(task)}")
+    row = _qw(
+        workspace,
+        ["continue", "--task-id", task_id, "--stop-at", target, "--by", "desktop"],
+    )
+    return {"ok": True, "task": row, "stop_at": target}
+
+
+def continue_tasks(workspace: Path, *, task_ids: list[str], stop_at: str) -> dict[str, Any]:
+    updated: list[str] = []
+    errors: list[dict[str, str]] = []
+    for task_id in task_ids:
+        tid = str(task_id or "").strip()
+        if not tid:
+            continue
+        try:
+            continue_task(workspace, task_id=tid, stop_at=stop_at)
+            updated.append(tid)
+        except (KeyError, PermissionError, ValueError, RuntimeError) as exc:
+            errors.append({"task_id": tid, "error": str(exc)})
+    return {
+        "ok": not errors or bool(updated),
+        "updated": updated,
+        "errors": errors,
+        "count": len(updated),
+        "stop_at": normalize_stop_at(stop_at),
     }
 
 

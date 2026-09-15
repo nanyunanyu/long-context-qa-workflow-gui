@@ -47,10 +47,13 @@ from desktop.backend.materials import scan_materials
 from desktop.backend.paths import code_root
 from desktop.backend.queue_ops import (
     can_cancel,
+    can_continue,
     can_human_reject,
     can_requeue,
     can_review_pass,
     can_start,
+    continue_tasks,
+    continue_targets,
     find_pack_sibling,
     human_reject_many,
     human_reject_passed,
@@ -113,6 +116,8 @@ class RunBody(BaseModel):
     retry_technical: bool = False
     include_used: bool = False
     question_type: str = Field(default="short_answer", pattern="^(short_answer|multiple_choice|auto)$")
+    stop_at: str = Field(default="package", pattern="^(generate|judge|package)$")
+    honor_task_stop_at: bool = False
     packs: list[PackSelector] | None = None
     task_ids: list[str] | None = None
 
@@ -177,6 +182,11 @@ class AutoReviewBatchBody(BaseModel):
     source_type: str = "public technical/government documentation"
 
 
+class ContinueTasksBody(BaseModel):
+    task_ids: list[str] = Field(min_length=1)
+    stop_at: str = Field(pattern="^(judge|package)$")
+
+
 class MaterialsAuditBody(BaseModel):
     packs: list[PackSelector] = Field(min_length=1)
 
@@ -208,6 +218,8 @@ def _annotate_queue(queue: dict[str, Any]) -> dict[str, Any]:
         row["can_auto_review"] = review_pass
         row["can_human_reject"] = human_reject
         row["can_start"] = can_start(task)
+        row["can_continue"] = can_continue(task)
+        row["continue_targets"] = continue_targets(task)
         row["status_editable"] = requeue or cancel  # backward compatible
         row["ended_at"] = task_ended_at(task)
         if sibling:
@@ -423,6 +435,18 @@ def api_tasks_status(body: TasksStatusBody) -> dict[str, Any]:
         status=body.status,
         reason=body.reason or f"batch → {body.status}",
     )
+    return {**result, "snapshot": _snapshot()}
+
+
+@app.post("/api/queue/tasks/continue")
+def api_tasks_continue(body: ContinueTasksBody) -> dict[str, Any]:
+    root = _require_workspace()
+    if _busy():
+        raise HTTPException(409, "已有生产任务在运行")
+    result = continue_tasks(root, task_ids=body.task_ids, stop_at=body.stop_at)
+    if not result.get("updated"):
+        detail = (result.get("errors") or [{"error": "没有可续跑的任务"}])[0].get("error") or "没有可续跑的任务"
+        raise HTTPException(400, detail)
     return {**result, "snapshot": _snapshot()}
 
 
@@ -739,6 +763,8 @@ def _spawn(root: Path, body: RunBody, *, skip_stage: bool) -> dict[str, Any]:
             question_type=body.question_type,
             packs=packs,
             task_ids=list(body.task_ids) if body.task_ids else None,
+            stop_at=body.stop_at,
+            honor_task_stop_at=body.honor_task_stop_at,
         )
 
     with _lock:

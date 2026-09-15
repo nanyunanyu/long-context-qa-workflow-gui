@@ -23,7 +23,7 @@ const label = computed(() => stageLabel(props.task, props.snapshot));
 const tones = computed(() => pipelineStepTones(props.task, props.snapshot));
 const showStrip = computed(() => {
   const s = String(props.task?.status || "");
-  return ["running", "claimed", "queued"].includes(s) || tones.value.some((t) => t.tone === "active");
+  return ["running", "claimed", "queued", "awaiting_eval", "awaiting_package"].includes(s) || tones.value.some((t) => t.tone === "active");
 });
 </script>
 

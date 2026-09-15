@@ -50,6 +50,9 @@ const icon = computed<Component>(() => {
       return VideoPlay;
     case "paused":
       return VideoPause;
+    case "awaiting_eval":
+    case "awaiting_package":
+      return Clock;
     default:
       return Clock;
   }
@@ -76,6 +79,10 @@ const label = computed(() => {
       return "已暂停";
     case "queued":
       return "排队";
+    case "awaiting_eval":
+      return "已出题";
+    case "awaiting_package":
+      return "已判分";
     case "pending":
       return "—";
     default:
@@ -93,6 +100,8 @@ const tone = computed(() => {
     case "manual_review":
     case "blocked":
     case "paused":
+    case "awaiting_eval":
+    case "awaiting_package":
       return "warn";
     case "gate_failed":
     case "cancelled":

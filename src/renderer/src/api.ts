@@ -45,6 +45,8 @@ export type TaskVisualState =
   | "running"
   | "paused"
   | "queued"
+  | "awaiting_eval"
+  | "awaiting_package"
   | "unknown";
 
 export const QUEUE_STATUS_OPTIONS: { value: string; label: string }[] = [
@@ -52,6 +54,8 @@ export const QUEUE_STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "claimed", label: "已领取" },
   { value: "running", label: "运行中" },
   { value: "queued", label: "排队" },
+  { value: "awaiting_eval", label: "已出题" },
+  { value: "awaiting_package", label: "已判分" },
   { value: "blocked", label: "复检" },
   { value: "cancelled", label: "已取消" },
   { value: "borderline_50", label: "临界 4/8" },
@@ -60,16 +64,18 @@ export const QUEUE_STATUS_OPTIONS: { value: string; label: string }[] = [
 
 export const ALL_QUEUE_STATUSES = QUEUE_STATUS_OPTIONS.map((o) => o.value);
 
-/** Board list group order: 通过 → 进行中 → 排队 → 复检 → 取消 → 临界 4/8 → 门禁失败 */
+/** Board list group order: 通过 → 进行中 → 排队 → 已出题/已判分 → 复检 → 取消 → 临界 4/8 → 门禁失败 */
 export const BOARD_STATUS_RANK: Record<string, number> = {
   passed: 0,
   claimed: 1,
   running: 1,
   queued: 2,
-  blocked: 3,
-  cancelled: 4,
-  borderline_50: 5,
-  gate_failed: 6,
+  awaiting_eval: 3,
+  awaiting_package: 3,
+  blocked: 4,
+  cancelled: 5,
+  borderline_50: 6,
+  gate_failed: 7,
 };
 
 export function boardStatusRank(task: any): number {
@@ -104,7 +110,7 @@ export function taskFilterDay(task: any): string | null {
 
 /** In-flight queue rows stay visible under date filter (no ended_at yet). */
 export function isActiveQueueStatus(status: unknown): boolean {
-  return ["queued", "claimed", "running"].includes(String(status || ""));
+  return ["queued", "claimed", "running", "awaiting_eval", "awaiting_package"].includes(String(status || ""));
 }
 
 /** Sort key ms for within-group ordering (newer first). */
@@ -311,6 +317,17 @@ export function taskMatchesMaterialQuery(
   );
 }
 
+export const STOP_AT_OPTIONS: { value: "generate" | "judge" | "package"; label: string; hint: string }[] = [
+  { value: "package", label: "全程打包", hint: "出题 → 判分 → 消融 → 落盘（现行默认）" },
+  { value: "generate", label: "出题", hint: "出题 + 出题门禁后停下，可稍后续跑" },
+  { value: "judge", label: "判分", hint: "含 8× rollout、改题与门禁；过门禁后停下，暂不消融打包" },
+];
+
+export const CONTINUE_STOP_AT_OPTIONS: { value: "judge" | "package"; label: string }[] = [
+  { value: "judge", label: "判分" },
+  { value: "package", label: "全程打包" },
+];
+
 export const STAGE_NAMES: Record<string, string> = {
   stage: "准备材料",
   enqueue: "入队",
@@ -324,6 +341,8 @@ export const STAGE_NAMES: Record<string, string> = {
   "gate-failed": "门禁失败归档",
   complete: "结束",
   paused: "已暂停",
+  awaiting_eval: "已出题",
+  awaiting_package: "已判分",
   "auto-review": "自动复验",
 };
 
@@ -364,6 +383,8 @@ export function taskVisualState(task: any, progress: any): TaskVisualState {
     if (step === "paused" || runStatus === "stopping" || runStatus === "interrupted") return "paused";
     return "queued";
   }
+  if (status === "awaiting_eval") return "awaiting_eval";
+  if (status === "awaiting_package") return "awaiting_package";
   return "unknown";
 }
 
@@ -373,6 +394,8 @@ export const BOARD_VISUAL_ORDER: TaskVisualState[] = [
   "running",
   "paused",
   "queued",
+  "awaiting_eval",
+  "awaiting_package",
   "manual_review",
   "blocked",
   "cancelled",
@@ -438,6 +461,8 @@ export function passVisualState(task: any): TaskVisualState | "pending" {
     return task.review_status === "manual_review" || task?.avg_accuracy === 0 ? "manual_review" : "blocked";
   }
   if (task.status === "cancelled") return "cancelled";
+  if (task.status === "awaiting_eval") return "awaiting_eval";
+  if (task.status === "awaiting_package") return "awaiting_package";
   return "pending";
 }
 
@@ -497,6 +522,8 @@ export function passColumnLabel(task: any): string {
   if (state === "borderline_50") return "恰好 4/8";
   if (state === "pending") return "—";
   if (state === "cancelled") return "已取消";
+  if (state === "awaiting_eval") return "已出题";
+  if (state === "awaiting_package") return "已判分";
   if (state === "manual_review") return "复验 0/8";
 
   const review = String(task?.review_status || "").toLowerCase();
@@ -590,13 +617,23 @@ function terminalStageLabel(task: any): string {
   if (task.status === "gate_failed") return "结束 · 门禁失败";
   if (task.status === "blocked") return "结束 · 未通过/待处理";
   if (task.status === "cancelled") return "已取消";
+  if (task.status === "awaiting_eval") return "已出题 · 可续跑";
+  if (task.status === "awaiting_package") return "已判分 · 可续跑";
   if (task.status === "running" || task.status === "claimed") return "运行中";
   if (task.status === "queued") return "排队";
   return task.status || "—";
 }
 
 export function stageLabel(task: any, progress: any): string {
-  const terminal = ["passed", "gate_failed", "borderline_50", "blocked", "cancelled"].includes(String(task?.status || ""));
+  const terminal = [
+    "passed",
+    "gate_failed",
+    "borderline_50",
+    "blocked",
+    "cancelled",
+    "awaiting_eval",
+    "awaiting_package",
+  ].includes(String(task?.status || ""));
   if (terminal) return terminalStageLabel(task);
 
   const row = progressRow(task, progress);
@@ -622,20 +659,29 @@ export function stageLabel(task: any, progress: any): string {
 
 export type StepTone = "done" | "active" | "todo" | "error" | "idle";
 
+const CHECKPOINT_DONE_STEPS: Record<string, string[]> = {
+  awaiting_eval: ["prepare", "generate", "precheck"],
+  awaiting_package: ["prepare", "generate", "precheck", "rollout", "judge"],
+};
+
 export function pipelineStepTones(task: any, progress: any): { step: string; label: string; tone: StepTone }[] {
   const row = progressRow(task, progress);
   const status = String(task?.status || "");
   const terminalFail = ["gate_failed", "borderline_50", "blocked", "cancelled"].includes(status);
   const terminalPass = status === "passed";
   const done = new Set<string>(Array.isArray(row?.done_steps) ? row.done_steps.map(String) : []);
+  for (const step of CHECKPOINT_DONE_STEPS[status] || []) done.add(step);
   const current = row ? String(row.step || "") : "";
   const currentIdx = PIPELINE_STEPS.indexOf(current as PipelineStep);
   const err = row?.status === "error";
+  const parked = status === "awaiting_eval" || status === "awaiting_package";
 
   return PIPELINE_STEPS.map((step, idx) => {
     let tone: StepTone = "todo";
     if (terminalPass) {
       tone = "done";
+    } else if (parked) {
+      tone = done.has(step) ? "done" : "todo";
     } else if (terminalFail) {
       if (done.has(step) || (currentIdx >= 0 && idx < currentIdx)) tone = "done";
       else if (step === current || (current === "gate-failed" && step === "complete")) tone = "error";

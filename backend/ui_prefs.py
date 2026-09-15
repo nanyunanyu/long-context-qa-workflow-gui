@@ -17,6 +17,7 @@ DEFAULT_UI: dict[str, Any] = {
         "date_from": None,
         "date_to": None,
         "question_type": "short_answer",
+        "stop_at": "package",
     },
     "materials": {
         "selected_domains": None,
@@ -70,6 +71,13 @@ def _norm_question_type(value: Any) -> str:
     return "short_answer"
 
 
+def _norm_stop_at(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"generate", "judge", "package"}:
+        return text
+    return "package"
+
+
 def _norm_board_day(value: Any) -> str | None:
     if value is None:
         return None
@@ -96,6 +104,7 @@ def get_ui_prefs() -> dict[str, Any]:
             "date_from": _norm_board_day(board.get("date_from")),
             "date_to": _norm_board_day(board.get("date_to")),
             "question_type": _norm_question_type(board.get("question_type")),
+            "stop_at": _norm_stop_at(board.get("stop_at")),
         },
         "materials": {
             "selected_domains": materials.get("selected_domains"),
@@ -133,6 +142,8 @@ def save_ui_prefs(patch: dict[str, Any]) -> dict[str, Any]:
             board_patch["date_to"] = _norm_board_day(board_patch.get("date_to"))
         if "question_type" in board_patch:
             board_patch["question_type"] = _norm_question_type(board_patch.get("question_type"))
+        if "stop_at" in board_patch:
+            board_patch["stop_at"] = _norm_stop_at(board_patch.get("stop_at"))
         merged["board"] = {**merged["board"], **board_patch}
     if isinstance(patch.get("materials"), dict):
         merged["materials"] = {**merged["materials"], **patch["materials"]}

@@ -47,6 +47,11 @@ if str(_CODE) not in sys.path:
     sys.path.insert(0, str(_CODE))
 
 from workflow import batch_run  # noqa: E402
+from workflow.stop_at import (  # noqa: E402
+    CHECKPOINT_DONE_STEPS,
+    aggregate_candidate_statuses,
+    normalize_stop_at,
+)
 
 FATAL_QUOTA_MESSAGE = "OpenAI 额度耗尽，已停止本批。请充值后再续跑技术失败。"
 _FATAL_QUOTA_MARKERS = (
@@ -507,7 +512,9 @@ def run_one_controlled(
     fixture_root: Path | None,
     source_type: str,
     retry_technical: bool,
+    stop_at: str = "package",
 ) -> dict[str, Any]:
+    stop_at = normalize_stop_at(stop_at)
     worker = task.get("worker_id") or f"desktop-{os.getpid()}"
     result: dict[str, Any] = {"task_id": task["id"], "slug": task["slug"], "status": "error", "candidates": []}
     try:
@@ -525,32 +532,25 @@ def run_one_controlled(
                 fixture_root=fixture_root,
                 source_type=source_type,
                 retry_technical=retry_technical,
+                stop_at=stop_at,
             )
             for i in range(1, batch_run.CANDIDATES_PER_CONTEXT + 1)
         ]
-        statuses = {row.get("status") for row in result["candidates"]}
-        if "passed" in statuses:
-            result["status"] = "passed"
-            queue_result = "passed"
-        elif "borderline_50" in statuses:
-            result["status"] = "borderline_50"
-            queue_result = "borderline_50"
-        elif "manual_review" in statuses:
-            result["status"] = "manual_review"
-            queue_result = "blocked"
-        elif "technical_failed" in statuses:
-            result["status"] = "technical_failed"
-            queue_result = "blocked"
-        else:
-            result["status"] = "gate_failed"
-            queue_result = "gate_failed"
+        result_status, queue_result = aggregate_candidate_statuses(row.get("status") for row in result["candidates"])
+        result["status"] = result_status
         result["provider"] = provider
         result["review_status"] = result["status"]
+        result["stop_at"] = stop_at
         if is_fatal_quota_result(result):
             request_quota_stop(workspace)
         summary_path = batch_run.resolved(task["sample_dir"]) / "work" / "candidate_results.json"
         batch_run.write_json(summary_path, result)
-        emit_event(workspace, step="complete", status="finished", task_id=task["id"], slug=task["slug"], detail=result["status"])
+        done_steps = CHECKPOINT_DONE_STEPS.get(result_status)
+        if done_steps:
+            for step in done_steps:
+                emit_event(workspace, step=step, status="finished", task_id=task["id"], slug=task["slug"], detail=result_status)
+        else:
+            emit_event(workspace, step="complete", status="finished", task_id=task["id"], slug=task["slug"], detail=result["status"])
         qw_json(
             workspace,
             [
@@ -620,6 +620,7 @@ def _stage_and_enqueue(
     include_used: bool,
     packs: list[dict[str, str]] | None = None,
     question_type: str = "short_answer",
+    stop_at: str = "package",
 ) -> None:
     emit_event(workspace, step="stage", status="started", detail=f"limit={limit}")
     manifest_path = workspace / "queue" / "pending_packs.json"
@@ -753,7 +754,7 @@ def _stage_and_enqueue(
     qtype = str(question_type or "short_answer").strip().lower() or "short_answer"
     if qtype not in {"short_answer", "multiple_choice", "auto"}:
         qtype = "short_answer"
-    enq += ["--question-type", qtype]
+    enq += ["--question-type", qtype, "--stop-at", normalize_stop_at(stop_at)]
     proc = popen_run(enq, workspace, timeout=600)
     if proc.returncode:
         raise RuntimeError(f"enqueue failed:\n{(proc.stderr or '')[-2000:]}\n{(proc.stdout or '')[-2000:]}")
@@ -771,6 +772,8 @@ def produce_batch(
     source_type: str = "public documentation",
     retry_technical: bool = False,
     task_ids: list[str] | None = None,
+    stop_at: str = "package",
+    honor_task_stop_at: bool = False,
 ) -> dict[str, Any]:
     system = workspace / "scripts" / "prompts" / "generate_qa.txt"
     fixture = fixture_root.resolve() if fixture_root else None
@@ -827,6 +830,10 @@ def produce_batch(
                     claimed_count -= 1
                 return
             bump_claimed(workspace)
+            if honor_task_stop_at:
+                task_stop = normalize_stop_at(task.get("stop_at"), stop_at)
+            else:
+                task_stop = normalize_stop_at(stop_at)
             row = run_one_controlled(
                 workspace,
                 task,
@@ -836,6 +843,7 @@ def produce_batch(
                 fixture_root=fixture,
                 source_type=source_type,
                 retry_technical=retry_technical,
+                stop_at=task_stop,
             )
             with results_lock:
                 results.append(row)
@@ -883,6 +891,8 @@ def run_pipeline(
     packs: list[dict[str, str]] | None = None,
     question_type: str = "short_answer",
     task_ids: list[str] | None = None,
+    stop_at: str = "package",
+    honor_task_stop_at: bool = False,
 ) -> dict[str, Any]:
     if packs:
         packs = [
@@ -926,6 +936,7 @@ def run_pipeline(
                     include_used=include_used,
                     packs=packs,
                     question_type=question_type,
+                    stop_at=stop_at,
                 )
                 raise_if_paused(workspace)
             if pinned:
@@ -944,6 +955,8 @@ def run_pipeline(
                 gen_retries=gen_retries,
                 retry_technical=retry_technical,
                 task_ids=pinned or None,
+                stop_at=stop_at,
+                honor_task_stop_at=honor_task_stop_at,
             )
         status = current_status_message(workspace, summary)
         mark_idle(workspace, status)
