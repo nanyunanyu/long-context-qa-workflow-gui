@@ -18,7 +18,7 @@ MARKER = Path(".lcqa") / "workspace.json"
 
 MATERIALS_README = """# 材料存放约定
 
-请按领域 → 主题包放置文档，软件不会代替你写入原文。
+请按领域 → 主题包放置文档。GUI「搜寻材料」会先补齐写死的种子包，再从 Gutenberg / GNU 手册 / RFC 等可达公开源补货；落盘后请先勾选或删除，再审核入队。
 
 ```
 materials/<domain>/<pack>/

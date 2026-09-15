@@ -760,6 +760,71 @@ def _stage_and_enqueue(
     emit_event(workspace, step="enqueue", status="finished")
 
 
+def queue_default_question_type(workspace: Path) -> str:
+    queue = read_queue(workspace)
+    defaults = queue.get("defaults") if isinstance(queue.get("defaults"), dict) else {}
+    qtype = str(defaults.get("question_type") or "short_answer").strip().lower()
+    if qtype not in {"short_answer", "multiple_choice", "auto"}:
+        return "short_answer"
+    return qtype
+
+
+def stage_and_enqueue_only(
+    workspace: Path,
+    *,
+    packs: list[dict[str, str]],
+    question_type: str | None = None,
+    include_used: bool = False,
+    provider: str = "live",
+) -> dict[str, Any]:
+    """Stage selected packs and enqueue them. Does not mark the run running or start workers."""
+    cleaned = [
+        {
+            "domain_key": str(item.get("domain_key") or "").strip(),
+            "pack": str(item.get("pack") or "").strip(),
+        }
+        for item in packs
+        if isinstance(item, dict)
+        and str(item.get("domain_key") or "").strip()
+        and str(item.get("pack") or "").strip()
+    ]
+    if not cleaned:
+        raise ValueError("no packs to enqueue")
+    qtype = str(question_type or queue_default_question_type(workspace)).strip().lower() or "short_answer"
+    if qtype not in {"short_answer", "multiple_choice", "auto"}:
+        qtype = "short_answer"
+    workspace = workspace.resolve()
+    before = {
+        str(task.get("id") or "")
+        for task in (read_queue(workspace).get("tasks") or [])
+        if isinstance(task, dict) and task.get("id")
+    }
+    _stage_and_enqueue(
+        workspace,
+        limit=len(cleaned),
+        prefer_cold=False,
+        include_hot=True,
+        domain=None,
+        provider=provider,
+        include_used=include_used,
+        packs=cleaned,
+        question_type=qtype,
+    )
+    queue = read_queue(workspace)
+    added = [
+        task
+        for task in (queue.get("tasks") or [])
+        if isinstance(task, dict) and str(task.get("id") or "") not in before
+    ]
+    return {
+        "ok": True,
+        "enqueued": len(added),
+        "question_type": qtype,
+        "task_ids": [str(task.get("id")) for task in added if task.get("id")],
+        "running": False,
+    }
+
+
 def produce_batch(
     workspace: Path,
     *,

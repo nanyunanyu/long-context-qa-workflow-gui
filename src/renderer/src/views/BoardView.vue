@@ -757,6 +757,10 @@ function taskCanStart(task: any): boolean {
   return Boolean(task?.can_start) || String(task?.status || "") === "queued";
 }
 
+function taskCanDequeue(task: any): boolean {
+  return Boolean(task?.can_dequeue) || String(task?.status || "") === "queued";
+}
+
 function taskSelectable(task: any): boolean {
   return Boolean(
     taskCanStart(task) ||
@@ -1014,6 +1018,13 @@ const batchActionOptions = computed<MenuAction[]>(() => [
     title: "领取已选排队任务并开始生产，不再挑选新材料",
   },
   {
+    label: withBatchCount("批量移除队列", selectedStartIds.value.length),
+    key: "dequeue",
+    disabled: running.value || batchBusy.value || !selectedStartIds.value.length,
+    danger: true,
+    title: "从队列删除已选排队任务，材料可再勾选入队",
+  },
+  {
     label: withBatchCount("批量改回排队", selectedRequeueIds.value.length),
     key: "requeue",
     disabled: running.value || batchBusy.value || !selectedRequeueIds.value.length,
@@ -1053,6 +1064,10 @@ function onBatchActionSelect(key: string | number) {
     void startQueuedTasks(selectedStartIds.value);
     return;
   }
+  if (action === "dequeue") {
+    void batchDequeue();
+    return;
+  }
   if (action === "requeue") {
     void batchChangeStatus("queued");
     return;
@@ -1077,6 +1092,7 @@ function onBatchActionSelect(key: string | number) {
 function taskHasActions(task: any): boolean {
   return Boolean(
     taskCanStart(task) ||
+      taskCanDequeue(task) ||
       task?.can_human_reject ||
       task?.can_review_pass ||
       task?.can_requeue ||
@@ -1094,9 +1110,18 @@ function taskActionOptions(task: any): MenuAction[] {
       title: "领取这条排队任务并开始生产，不再挑选新材料",
     });
   }
+  if (taskCanDequeue(task)) {
+    opts.push({
+      label: "移除队列",
+      key: "dequeue",
+      disabled: running.value || batchBusy.value,
+      danger: true,
+      title: "从队列删除这条排队任务，材料可再勾选入队",
+    });
+  }
   if (task.can_human_reject) {
     opts.push({
-      label: "复检不通过？",
+      label: "复检不通过",
       key: "human_reject",
       danger: true,
       title: "确认题/金标有问题：从待复验或 samples 迁入 failed-samples 并释放材料",
@@ -1136,6 +1161,10 @@ function onTaskActionSelect(key: string | number, task: any) {
     void startQueuedTasks([task.id]);
     return;
   }
+  if (action === "dequeue") {
+    void dequeueTask(task.id);
+    return;
+  }
   if (action === "human_reject") {
     void humanReject(task);
     return;
@@ -1165,6 +1194,19 @@ async function changeStatus(taskId: string, status: "queued" | "cancelled") {
       status,
       reason: status === "queued" ? "manual requeue" : "manual cancel",
     });
+    selectedTaskIds.value = selectedTaskIds.value.filter((id) => id !== taskId);
+    emit("refresh");
+  } catch (err: any) {
+    toastError(err);
+  } finally {
+    statusBusy.value = null;
+  }
+}
+
+async function dequeueTask(taskId: string) {
+  statusBusy.value = taskId;
+  try {
+    await apiPost("/api/queue/task/dequeue", { task_id: taskId });
     selectedTaskIds.value = selectedTaskIds.value.filter((id) => id !== taskId);
     emit("refresh");
   } catch (err: any) {
@@ -1334,6 +1376,26 @@ async function batchChangeStatus(status: "queued" | "cancelled") {
     const errCount = result?.errors?.length || 0;
     if (errCount) {
       toastWarning(`已更新 ${result.count || 0} 条，失败 ${errCount} 条`);
+    }
+    const done = new Set(result?.updated || ids);
+    selectedTaskIds.value = selectedTaskIds.value.filter((id) => !done.has(id));
+    emit("refresh");
+  } catch (err: any) {
+    toastError(err);
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+async function batchDequeue() {
+  const ids = [...selectedStartIds.value];
+  if (!ids.length) return;
+  batchBusy.value = true;
+  try {
+    const result = await apiPost("/api/queue/tasks/dequeue", { task_ids: ids });
+    const errCount = result?.errors?.length || 0;
+    if (errCount) {
+      toastWarning(`已移除 ${result.count || 0} 条，失败 ${errCount} 条`);
     }
     const done = new Set(result?.updated || ids);
     selectedTaskIds.value = selectedTaskIds.value.filter((id) => !done.has(id));

@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -42,15 +43,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from desktop.backend.auto_review import run_auto_review
+from desktop.backend.ingest import audit_and_enqueue, delete_packs, list_ingest_jobs, run_ingest
 from desktop.backend.material_audit import audit_packs
 from desktop.backend.materials import scan_materials
 from desktop.backend.paths import code_root
 from desktop.backend.queue_ops import (
     can_cancel,
+    can_dequeue,
     can_human_reject,
     can_requeue,
     can_review_pass,
     can_start,
+    dequeue_task,
+    dequeue_tasks,
     find_pack_sibling,
     human_reject_many,
     human_reject_passed,
@@ -85,11 +90,17 @@ _lock = threading.Lock()
 _workspace: Path | None = None
 _run_thread: threading.Thread | None = None
 _audit_thread: threading.Thread | None = None
+_ingest_thread: threading.Thread | None = None
 _audit_stop = threading.Event()
+_ingest_stop = threading.Event()
 _last_run: dict[str, Any] | None = None
 _last_audit: dict[str, Any] | None = None
+_last_ingest: dict[str, Any] | None = None
 _audit_current: dict[str, str] | None = None
 _audit_pending: list[dict[str, str]] = []
+_ingest_current: dict[str, Any] | None = None
+_ingest_pending: list[dict[str, Any]] = []
+_ingest_run_id: str | None = None
 
 
 class OpenBody(BaseModel):
@@ -137,6 +148,14 @@ class TasksStatusBody(BaseModel):
     reason: str = ""
 
 
+class TaskDequeueBody(BaseModel):
+    task_id: str = Field(min_length=1)
+
+
+class TasksDequeueBody(BaseModel):
+    task_ids: list[str] = Field(min_length=1)
+
+
 class ReviewPassBody(BaseModel):
     task_id: str = Field(min_length=1)
     provider: str = "live"
@@ -181,6 +200,15 @@ class MaterialsAuditBody(BaseModel):
     packs: list[PackSelector] = Field(min_length=1)
 
 
+class MaterialsIngestBody(BaseModel):
+    packs: list[PackSelector] | None = None
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class MaterialsDeleteBody(BaseModel):
+    packs: list[PackSelector] = Field(min_length=1)
+
+
 def _require_workspace() -> Path:
     if _workspace is None:
         raise HTTPException(400, "尚未选择工作根目录")
@@ -208,6 +236,7 @@ def _annotate_queue(queue: dict[str, Any]) -> dict[str, Any]:
         row["can_auto_review"] = review_pass
         row["can_human_reject"] = human_reject
         row["can_start"] = can_start(task)
+        row["can_dequeue"] = can_dequeue(task)
         row["status_editable"] = requeue or cancel  # backward compatible
         row["ended_at"] = task_ended_at(task)
         if sibling:
@@ -224,6 +253,14 @@ def _annotate_queue(queue: dict[str, Any]) -> dict[str, Any]:
 
 def _snapshot() -> dict[str, Any]:
     root = _workspace
+    idle = {
+        "last_ingest": _last_ingest,
+        "ingest_busy": False,
+        "ingest_stopping": False,
+        "ingest_current": None,
+        "ingest_pending": [],
+        "ingest_run_id": None,
+    }
     if root is None:
         return {
             "workspace": None,
@@ -238,6 +275,7 @@ def _snapshot() -> dict[str, Any]:
             "audit_stopping": False,
             "audit_current": None,
             "audit_pending": [],
+            **idle,
         }
     queue = _annotate_queue(read_queue(root))
     progress = read_progress(root)
@@ -254,6 +292,12 @@ def _snapshot() -> dict[str, Any]:
         "audit_stopping": _audit_stopping(),
         "audit_current": dict(_audit_current) if _audit_current else None,
         "audit_pending": [dict(item) for item in _audit_pending],
+        "last_ingest": _last_ingest,
+        "ingest_busy": _ingest_busy(),
+        "ingest_stopping": _ingest_stopping(),
+        "ingest_current": dict(_ingest_current) if _ingest_current else None,
+        "ingest_pending": [dict(item) for item in _ingest_pending],
+        "ingest_run_id": _ingest_run_id,
     }
 
 
@@ -268,7 +312,7 @@ def _maybe_sweep_idle(root: Path) -> dict[str, Any] | None:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "code_root": str(code_root()), "features": ["reasoning_effort", "auto_review", "material_audit"]}
+    return {"ok": True, "code_root": str(code_root()), "features": ["reasoning_effort", "auto_review", "material_audit", "material_ingest"]}
 
 
 @app.get("/api/recents")
@@ -356,6 +400,10 @@ def _clear_audit_progress() -> None:
 def api_materials_audit(body: MaterialsAuditBody) -> dict[str, Any]:
     global _audit_thread, _last_audit
     root = _require_workspace()
+    if _busy():
+        raise HTTPException(409, "已有生产任务在运行")
+    if _ingest_busy():
+        raise HTTPException(409, "已有材料搜寻在运行")
     if _audit_busy():
         raise HTTPException(409, "已有材料审核在运行")
     packs = [{"domain_key": p.domain_key, "pack": p.pack} for p in body.packs]
@@ -391,6 +439,140 @@ def api_materials_audit_stop() -> dict[str, Any]:
     return {"ok": True, "stopping": True, "snapshot": _snapshot()}
 
 
+@app.get("/api/materials/ingest/jobs")
+def api_materials_ingest_jobs() -> dict[str, Any]:
+    return list_ingest_jobs(_require_workspace())
+
+
+def _set_ingest_progress(current: dict[str, Any] | None, pending: list[dict[str, Any]]) -> None:
+    global _ingest_current, _ingest_pending
+    _ingest_current = dict(current) if current else None
+    _ingest_pending = [dict(item) for item in pending]
+
+
+def _clear_ingest_progress() -> None:
+    _set_ingest_progress(None, [])
+
+
+def _reject_materials_conflict() -> None:
+    if _busy():
+        raise HTTPException(409, "已有生产任务在运行")
+    if _ingest_busy():
+        raise HTTPException(409, "已有材料搜寻在运行")
+    if _audit_busy():
+        raise HTTPException(409, "已有材料审核在运行")
+
+
+@app.post("/api/materials/ingest")
+def api_materials_ingest(body: MaterialsIngestBody) -> dict[str, Any]:
+    global _ingest_thread, _last_ingest, _ingest_run_id
+    root = _require_workspace()
+    _reject_materials_conflict()
+    only = [{"domain_key": p.domain_key, "pack": p.pack} for p in body.packs] if body.packs is not None else None
+    if only is not None and not only:
+        raise HTTPException(400, "请至少选择一个种子材料包")
+    jobs = list_ingest_jobs(root).get("jobs") or []
+    if only is not None:
+        want = {(item["domain_key"], item["pack"]) for item in only}
+        jobs = [job for job in jobs if (job.get("domain_key"), job.get("pack")) in want]
+    missing_jobs = [job for job in jobs if not job.get("exists")]
+    progress_jobs: list[dict[str, Any]] = list(missing_jobs)
+    if only is None:
+        progress_jobs.append(
+            {
+                "collector": "discover",
+                "domain_key": "search",
+                "pack": "preset-sites",
+                "theme": "正在搜寻 Gutenberg / GNU 手册 / RFC",
+            }
+        )
+    run_id = uuid.uuid4().hex[:12]
+    _ingest_run_id = run_id
+    _last_ingest = None
+    _ingest_stop.clear()
+    _set_ingest_progress(progress_jobs[0] if progress_jobs else None, progress_jobs)
+
+    def on_pack(item: dict[str, Any], index: int) -> None:
+        pending = progress_jobs[index:] if index < len(progress_jobs) else [item]
+        _set_ingest_progress(item, pending or [item])
+
+    def target() -> None:
+        global _last_ingest
+        try:
+            _last_ingest = run_ingest(
+                root,
+                only=only,
+                should_stop=_ingest_stop.is_set,
+                on_pack=on_pack,
+                discover_limit=None if only is not None else body.limit,
+                ingest_run_id=run_id,
+            )
+        except Exception as exc:
+            _last_ingest = {"ok": False, "kind": "material_ingest", "ingest_run_id": run_id, "error": str(exc)}
+        else:
+            if isinstance(_last_ingest, dict):
+                _last_ingest["ingest_run_id"] = run_id
+        finally:
+            _clear_ingest_progress()
+
+    with _lock:
+        _ingest_thread = threading.Thread(target=target, name="lcqa-material-ingest", daemon=True)
+        _ingest_thread.start()
+    return {"ok": True, "started": True, "count": len(progress_jobs), "ingest_run_id": run_id, "snapshot": _snapshot()}
+
+
+@app.post("/api/materials/ingest/stop")
+def api_materials_ingest_stop() -> dict[str, Any]:
+    if not _ingest_busy():
+        raise HTTPException(409, "当前没有材料搜寻在运行")
+    _ingest_stop.set()
+    return {"ok": True, "stopping": True, "snapshot": _snapshot()}
+
+
+@app.post("/api/materials/packs/delete")
+def api_materials_packs_delete(body: MaterialsDeleteBody) -> dict[str, Any]:
+    root = _require_workspace()
+    _reject_materials_conflict()
+    packs = [{"domain_key": p.domain_key, "pack": p.pack} for p in body.packs]
+    try:
+        result = delete_packs(root, packs)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {**result, "snapshot": _snapshot()}
+
+
+@app.post("/api/materials/audit-enqueue")
+def api_materials_audit_enqueue(body: MaterialsAuditBody) -> dict[str, Any]:
+    global _audit_thread, _last_audit
+    root = _require_workspace()
+    _reject_materials_conflict()
+    packs = [{"domain_key": p.domain_key, "pack": p.pack} for p in body.packs]
+    _audit_stop.clear()
+    _set_audit_progress(None, packs)
+
+    def on_pack(item: dict[str, str], index: int) -> None:
+        _set_audit_progress(item, packs[index:])
+
+    def target() -> None:
+        global _last_audit
+        try:
+            _last_audit = audit_and_enqueue(
+                root,
+                packs,
+                should_stop=_audit_stop.is_set,
+                on_pack=on_pack,
+            )
+        except Exception as exc:
+            _last_audit = {"ok": False, "kind": "material_audit_enqueue", "error": str(exc)}
+        finally:
+            _clear_audit_progress()
+
+    with _lock:
+        _audit_thread = threading.Thread(target=target, name="lcqa-material-audit-enqueue", daemon=True)
+        _audit_thread.start()
+    return {"ok": True, "started": True, "count": len(packs), "snapshot": _snapshot()}
+
+
 @app.get("/api/queue")
 def api_queue() -> dict[str, Any]:
     return _annotate_queue(read_queue(_require_workspace()))
@@ -423,6 +605,31 @@ def api_tasks_status(body: TasksStatusBody) -> dict[str, Any]:
         status=body.status,
         reason=body.reason or f"batch → {body.status}",
     )
+    return {**result, "snapshot": _snapshot()}
+
+
+@app.post("/api/queue/task/dequeue")
+def api_task_dequeue(body: TaskDequeueBody) -> dict[str, Any]:
+    root = _require_workspace()
+    try:
+        result = dequeue_task(root, task_id=body.task_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return {"ok": True, **result, "snapshot": _snapshot()}
+
+
+@app.post("/api/queue/tasks/dequeue")
+def api_tasks_dequeue(body: TasksDequeueBody) -> dict[str, Any]:
+    root = _require_workspace()
+    if not body.task_ids:
+        raise HTTPException(400, "task_ids required")
+    result = dequeue_tasks(root, task_ids=body.task_ids)
     return {**result, "snapshot": _snapshot()}
 
 
@@ -686,6 +893,14 @@ def _audit_stopping() -> bool:
     return _audit_busy() and _audit_stop.is_set()
 
 
+def _ingest_busy() -> bool:
+    return _ingest_thread is not None and _ingest_thread.is_alive()
+
+
+def _ingest_stopping() -> bool:
+    return _ingest_busy() and _ingest_stop.is_set()
+
+
 @app.post("/api/run/start")
 def api_start(body: RunBody) -> dict[str, Any]:
     root = _require_workspace()
@@ -697,6 +912,10 @@ def api_start(body: RunBody) -> dict[str, Any]:
         raise HTTPException(400, "自选材料模式下请至少选择一个材料包")
     if _busy():
         raise HTTPException(409, "已有生产任务在运行")
+    if _ingest_busy():
+        raise HTTPException(409, "已有材料搜寻在运行")
+    if _audit_busy():
+        raise HTTPException(409, "已有材料审核在运行")
     skip_stage = body.skip_stage or bool(body.task_ids)
     return _spawn(root, body, skip_stage=skip_stage)
 
@@ -710,6 +929,10 @@ def api_resume(body: RunBody) -> dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
     if _busy():
         raise HTTPException(409, "已有生产任务在运行")
+    if _ingest_busy():
+        raise HTTPException(409, "已有材料搜寻在运行")
+    if _audit_busy():
+        raise HTTPException(409, "已有材料审核在运行")
     payload = body.model_copy(update={"skip_stage": True})
     return _spawn(root, payload, skip_stage=True)
 

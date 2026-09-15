@@ -1,6 +1,7 @@
 """Desktop-side queue helpers (wrap queue_worker; do not edit workflow/)."""
 from __future__ import annotations
 
+import fcntl
 import json
 import shutil
 import subprocess
@@ -127,15 +128,18 @@ def is_non_accuracy_failure(task: dict[str, Any]) -> bool:
 
 
 def can_requeue(task: dict[str, Any], *, queue: dict[str, Any] | None = None) -> bool:
-    """cancelled, non-accuracy gate_failed/blocked, or human_reject after pass revoke.
+    """cancelled, borderline 4/8, non-accuracy gate_failed/blocked, or human_reject after pass revoke.
 
     When queue is provided: only the preferred task for that pack/slug may requeue
     (so multiple cancelled rows do not each expose「改回排队」).
     """
-    if str(task.get("status") or "") == "cancelled":
+    status = str(task.get("status") or "")
+    if status == "cancelled":
+        base = True
+    elif status == "borderline_50":
         base = True
     elif str(task.get("review_status") or "").lower() == "human_reject":
-        base = str(task.get("status") or "") in {"gate_failed", "blocked"}
+        base = status in {"gate_failed", "blocked"}
     else:
         base = is_non_accuracy_failure(task)
     if not base:
@@ -169,12 +173,19 @@ def find_pack_sibling(queue: dict[str, Any], task: dict[str, Any]) -> dict[str, 
 
 
 def can_cancel(task: dict[str, Any]) -> bool:
-    """Only non-accuracy failures (not already cancelled)."""
+    """Non-accuracy failures or borderline 4/8 (not already cancelled)."""
+    if str(task.get("status") or "") == "borderline_50":
+        return True
     return is_non_accuracy_failure(task)
 
 
 def can_start(task: dict[str, Any]) -> bool:
     """Queued tasks can be claimed and produced without staging new packs."""
+    return str(task.get("status") or "") == "queued"
+
+
+def can_dequeue(task: dict[str, Any]) -> bool:
+    """Queued tasks can be dropped from the board and re-selected later."""
     return str(task.get("status") or "") == "queued"
 
 
@@ -362,7 +373,7 @@ def set_task_status(
             raise PermissionError("task cannot be requeued")
     elif status == "cancelled":
         if not can_cancel(task):
-            raise PermissionError("only non-accuracy gate failures can be cancelled")
+            raise PermissionError("only non-accuracy gate failures or borderline 4/8 can be cancelled")
         # Cancelling a duplicate loser is always allowed when can_cancel is true.
         # Also allow cancel of accuracy failures? unchanged.
     row = _qw(
@@ -422,6 +433,54 @@ def set_tasks_status(
             set_task_status(workspace, task_id=tid, status=status, reason=reason)
             updated.append(tid)
         except (KeyError, PermissionError, ValueError, RuntimeError) as exc:
+            errors.append({"task_id": tid, "error": str(exc)})
+    return {
+        "ok": not errors or bool(updated),
+        "updated": updated,
+        "errors": errors,
+        "count": len(updated),
+    }
+
+
+def dequeue_task(workspace: Path, *, task_id: str) -> dict[str, Any]:
+    """Remove a still-queued task so its pack can be staged/enqueued again."""
+    lock_path = workspace / "queue" / "locks" / "queue.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            queue = read_queue(workspace)
+            found: dict[str, Any] | None = None
+            kept: list[Any] = []
+            for task in queue.get("tasks") or []:
+                if isinstance(task, dict) and task.get("id") == task_id:
+                    found = task
+                    continue
+                kept.append(task)
+            if found is None:
+                raise KeyError(f"task not found: {task_id}")
+            status = str(found.get("status") or "")
+            if status != "queued":
+                raise PermissionError(f"task cannot be dequeued: status={status}")
+            queue["tasks"] = kept
+            queue["updated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            write_queue(workspace, queue)
+            return {"task": found}
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def dequeue_tasks(workspace: Path, *, task_ids: list[str]) -> dict[str, Any]:
+    updated: list[str] = []
+    errors: list[dict[str, str]] = []
+    for task_id in task_ids:
+        tid = str(task_id or "").strip()
+        if not tid:
+            continue
+        try:
+            dequeue_task(workspace, task_id=tid)
+            updated.append(tid)
+        except (KeyError, PermissionError, ValueError, RuntimeError, OSError) as exc:
             errors.append({"task_id": tid, "error": str(exc)})
     return {
         "ok": not errors or bool(updated),

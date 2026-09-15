@@ -1021,7 +1021,9 @@ class MaterialSelectTests(unittest.TestCase):
         )
         by_id = {t["id"]: t for t in queue["tasks"]}
         self.assertTrue(by_id["t-q"]["can_start"])
+        self.assertTrue(by_id["t-q"]["can_dequeue"])
         self.assertFalse(by_id["t-p"]["can_start"])
+        self.assertFalse(by_id["t-p"]["can_dequeue"])
 
 
 class UiPrefsAndQueueOpsTests(unittest.TestCase):
@@ -1208,16 +1210,84 @@ class BoardOpsTests(unittest.TestCase):
         self.assertFalse(can_requeue({"status": "gate_failed", "avg_accuracy": 0.75}))
         self.assertFalse(can_cancel({"status": "gate_failed", "avg_accuracy": 1.0}))
         self.assertFalse(can_requeue({"status": "passed", "avg_accuracy": 0.375}))
-        self.assertFalse(can_requeue({"status": "borderline_50", "avg_accuracy": 0.5}))
-        self.assertFalse(can_cancel({"status": "borderline_50", "avg_accuracy": 0.5}))
+        self.assertTrue(can_requeue({"status": "borderline_50", "avg_accuracy": 0.5}))
+        self.assertTrue(can_cancel({"status": "borderline_50", "avg_accuracy": 0.5}))
 
     def test_can_start_queued_only(self):
-        from desktop.backend.queue_ops import can_start
+        from desktop.backend.queue_ops import can_dequeue, can_start
 
         self.assertTrue(can_start({"status": "queued"}))
+        self.assertTrue(can_dequeue({"status": "queued"}))
         self.assertFalse(can_start({"status": "claimed"}))
+        self.assertFalse(can_dequeue({"status": "claimed"}))
         self.assertFalse(can_start({"status": "passed"}))
+        self.assertFalse(can_dequeue({"status": "passed"}))
         self.assertFalse(can_start({"status": "cancelled"}))
+        self.assertFalse(can_dequeue({"status": "cancelled"}))
+        self.assertFalse(can_dequeue({"status": "running"}))
+
+    def test_dequeue_task_removes_queued_row(self):
+        from desktop.backend.queue_ops import dequeue_task, dequeue_tasks, read_queue, write_queue
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_queue(
+                root,
+                {
+                    "version": 2,
+                    "tasks": [
+                        {"id": "t-q", "slug": "demo", "status": "queued"},
+                        {"id": "t-keep", "slug": "other", "status": "queued"},
+                    ],
+                },
+            )
+            result = dequeue_task(root, task_id="t-q")
+            self.assertEqual(result["task"]["id"], "t-q")
+            remaining = read_queue(root)
+            ids = [t["id"] for t in remaining["tasks"]]
+            self.assertEqual(ids, ["t-keep"])
+            self.assertIn("updated_at", remaining)
+
+            write_queue(
+                root,
+                {
+                    "version": 2,
+                    "tasks": [
+                        {"id": "t-a", "slug": "a", "status": "queued"},
+                        {"id": "t-b", "slug": "b", "status": "queued"},
+                        {"id": "t-c", "slug": "c", "status": "claimed"},
+                    ],
+                },
+            )
+            batch = dequeue_tasks(root, task_ids=["t-a", "t-c", "t-b"])
+            self.assertEqual(batch["updated"], ["t-a", "t-b"])
+            self.assertEqual(len(batch["errors"]), 1)
+            self.assertEqual(batch["errors"][0]["task_id"], "t-c")
+            self.assertEqual([t["id"] for t in read_queue(root)["tasks"]], ["t-c"])
+
+    def test_dequeue_task_rejects_non_queued(self):
+        from desktop.backend.queue_ops import dequeue_task, read_queue, write_queue
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = {
+                "version": 2,
+                "tasks": [
+                    {"id": "t-run", "slug": "demo", "status": "running"},
+                    {"id": "t-claim", "slug": "demo-2", "status": "claimed"},
+                    {"id": "t-pass", "slug": "done", "status": "passed"},
+                ],
+            }
+            write_queue(root, original)
+            for task_id, status in (("t-run", "running"), ("t-claim", "claimed"), ("t-pass", "passed")):
+                with self.assertRaises(PermissionError) as raised:
+                    dequeue_task(root, task_id=task_id)
+                self.assertIn(status, str(raised.exception))
+            with self.assertRaises(KeyError):
+                dequeue_task(root, task_id="t-missing")
+            after = read_queue(root)
+            self.assertEqual([t["id"] for t in after["tasks"]], ["t-run", "t-claim", "t-pass"])
+            self.assertEqual([t["status"] for t in after["tasks"]], ["running", "claimed", "passed"])
 
     def test_can_requeue_blocked_by_pack_sibling(self):
         from desktop.backend.queue_ops import can_requeue, find_pack_sibling
@@ -2126,6 +2196,491 @@ class MaterialAuditTests(unittest.TestCase):
                 )
 
             self.assertEqual(seen, [("pack-a", 0), ("pack-b", 1)])
+
+
+class MaterialIngestTests(unittest.TestCase):
+    def _write_ready_pack(self, root: Path, domain_key: str, pack: str, *, tokens: int = 20000) -> Path:
+        pack_dir = root / "materials" / domain_key / pack
+        md = pack_dir / "md" / "doc.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("# Doc\n\n" + ("word " * 4000), encoding="utf-8")
+        catalog = {
+            "pack": pack,
+            "domain": domain_key,
+            "domain_key": domain_key,
+            "status": "READY",
+            "theme": "seed",
+            "docs": [
+                {
+                    "doc_id": "DOC1",
+                    "title": pack,
+                    "file_md": f"materials/{domain_key}/{pack}/md/doc.md",
+                    "file_html": f"materials/{domain_key}/{pack}/html/doc.html",
+                }
+            ],
+            "total_approx_tokens": tokens,
+            "enough_for_16k": tokens >= 16000,
+        }
+        (pack_dir / "html").mkdir(parents=True, exist_ok=True)
+        (pack_dir / "html" / "doc.html").write_text("<p>doc</p>", encoding="utf-8")
+        (pack_dir / "CATALOG.json").write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return pack_dir
+
+    def test_collect_bind_points_at_workspace_and_restores(self) -> None:
+        from desktop.backend.ingest import CollectBind, _load_twelve
+
+        twelve = _load_twelve()
+        original_root = twelve.ROOT
+        original_materials = twelve.MATERIALS
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "ws"
+            root.mkdir()
+            with CollectBind(root):
+                self.assertEqual(twelve.ROOT, root.resolve())
+                self.assertEqual(twelve.MATERIALS, root.resolve() / "materials")
+                self.assertNotEqual(twelve.ROOT, original_root)
+            self.assertEqual(twelve.ROOT, original_root)
+            self.assertEqual(twelve.MATERIALS, original_materials)
+
+    def test_list_ingest_jobs_marks_existing_and_is_deduped(self) -> None:
+        from desktop.backend.ingest import list_ingest_jobs
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jobs = list_ingest_jobs(root)
+            self.assertGreater(jobs["count"], 0)
+            keys = [(row["domain_key"], row["pack"]) for row in jobs["jobs"]]
+            self.assertEqual(len(keys), len(set(keys)))
+            self.assertTrue(any(row["collector"] == "twelve" for row in jobs["jobs"]))
+            self.assertTrue(any(row["collector"] == "legal" and row["pack"] == "privacy-data-governance" for row in jobs["jobs"]))
+            sample = jobs["jobs"][0]
+            self._write_ready_pack(root, sample["domain_key"], sample["pack"])
+            again = list_ingest_jobs(root)
+            marked = next(row for row in again["jobs"] if row["pack"] == sample["pack"] and row["domain_key"] == sample["domain_key"])
+            self.assertTrue(marked["exists"])
+            self.assertGreaterEqual(again["existing"], 1)
+
+    def test_run_ingest_skips_existing_and_collects_missing(self) -> None:
+        from desktop.backend import ingest as ingest_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            jobs = ingest_mod.list_ingest_jobs(root)["jobs"]
+            existing = next(row for row in jobs if row["collector"] != "legal")
+            missing = next(row for row in jobs if row["pack"] != existing["pack"])
+            self._write_ready_pack(root, existing["domain_key"], existing["pack"])
+            called: list[str] = []
+
+            def fake_collect(workspace: Path, job: dict) -> dict:
+                called.append(str(job["pack"]))
+                pack_dir = workspace / "materials" / job["domain_key"] / job["pack"]
+                pack_dir.mkdir(parents=True, exist_ok=True)
+                catalog = {
+                    "pack": job["pack"],
+                    "domain": job.get("domain") or job["domain_key"],
+                    "domain_key": job["domain_key"],
+                    "status": "READY",
+                    "enough_for_16k": True,
+                    "docs": [{"doc_id": "DOC1", "file_md": f"materials/{job['domain_key']}/{job['pack']}/md/doc.md"}],
+                    "total_approx_tokens": 20000,
+                }
+                (pack_dir / "md").mkdir(exist_ok=True)
+                (pack_dir / "md" / "doc.md").write_text("# new\n", encoding="utf-8")
+                (pack_dir / "CATALOG.json").write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                ingest_mod._load_twelve().upsert_domain_catalog(job["domain_key"], catalog["domain"], catalog)
+                return catalog
+
+            with patch.object(ingest_mod, "collect_one", side_effect=fake_collect):
+                result = ingest_mod.run_ingest(
+                    root,
+                    only=[
+                        {"domain_key": existing["domain_key"], "pack": existing["pack"]},
+                        {"domain_key": missing["domain_key"], "pack": missing["pack"]},
+                    ],
+                )
+            self.assertEqual(called, [missing["pack"]])
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["skipped"], 1)
+            self.assertEqual(result["collected"][0]["pack"], missing["pack"])
+            scanned = __import__("desktop.backend.materials", fromlist=["scan_materials"]).scan_materials(root)
+            names = {pack["pack"] for domain in scanned["domains"] for pack in domain["packs"]}
+            self.assertIn(existing["pack"], names)
+            self.assertIn(missing["pack"], names)
+
+    def test_user_guide_catalog_upsert_keeps_other_packs(self) -> None:
+        from desktop.backend.ingest import CollectBind, _write_user_guide_catalog
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            domain = root / "materials" / "user_guides"
+            domain.mkdir(parents=True)
+            (domain / "CATALOG.json").write_text(
+                json.dumps(
+                    {
+                        "domain": "用户指南",
+                        "domain_key": "user_guides",
+                        "packs": [{"pack": "keep-me", "path": "materials/user_guides/keep-me"}],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with CollectBind(root):
+                _write_user_guide_catalog(
+                    root,
+                    "ghostscript",
+                    {
+                        "pack": "ghostscript",
+                        "domain": "用户指南",
+                        "theme": "Ghostscript",
+                        "status": "READY",
+                        "docs": [{"doc_id": "DOC1"}],
+                        "total_approx_tokens": 20000,
+                    },
+                )
+            cat = json.loads((domain / "CATALOG.json").read_text(encoding="utf-8"))
+            names = [row["pack"] for row in cat["packs"]]
+            self.assertIn("keep-me", names)
+            self.assertIn("ghostscript", names)
+
+    def test_delete_pack_removes_dir_and_index(self) -> None:
+        from desktop.backend.ingest import delete_pack
+        from desktop.backend.materials import scan_materials
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_ready_pack(root, "example", "demo-pack")
+            (root / "materials" / "example" / "CATALOG.json").write_text(
+                json.dumps(
+                    {
+                        "domain": "example",
+                        "domain_key": "example",
+                        "packs": [{"pack": "demo-pack", "path": "materials/example/demo-pack"}],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            result = delete_pack(root, "example", "demo-pack")
+            self.assertTrue(result["ok"])
+            self.assertFalse((root / "materials" / "example" / "demo-pack").exists())
+            cat = json.loads((root / "materials" / "example" / "CATALOG.json").read_text(encoding="utf-8"))
+            self.assertEqual(cat["packs"], [])
+            scanned = scan_materials(root)
+            packs = [pack["pack"] for domain in scanned["domains"] for pack in domain["packs"]]
+            self.assertNotIn("demo-pack", packs)
+
+    def test_audit_and_enqueue_skips_fail_and_does_not_start_run(self) -> None:
+        from desktop.backend import ingest as ingest_mod
+        from desktop.backend.run_control import read_state
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "ws"
+            root.mkdir()
+            ensure_workspace(root)
+
+            def fake_audit(workspace, packs, should_stop=None, on_pack=None):
+                return {
+                    "ok": True,
+                    "results": [
+                        {
+                            "ok": True,
+                            "domain_key": "example",
+                            "pack": "good",
+                            "llm_audit": {"status": "pass"},
+                        },
+                        {
+                            "ok": True,
+                            "domain_key": "example",
+                            "pack": "bad",
+                            "llm_audit": {"status": "fail"},
+                        },
+                        {
+                            "ok": True,
+                            "domain_key": "example",
+                            "pack": "warn-pack",
+                            "llm_audit": {"status": "warn"},
+                        },
+                    ],
+                    "count": 3,
+                    "skipped": 0,
+                    "stopped": False,
+                }
+
+            called: list[list[dict]] = []
+
+            def fake_enqueue(workspace, *, packs, **kwargs):
+                called.append(packs)
+                queue_path = workspace / "queue" / "queue.json"
+                queue = json.loads(queue_path.read_text(encoding="utf-8"))
+                for item in packs:
+                    queue.setdefault("tasks", []).append(
+                        {
+                            "id": f"t-{item['pack']}",
+                            "status": "queued",
+                            "slug": item["pack"],
+                            "materials_pack": f"materials/{item['domain_key']}/{item['pack']}",
+                        }
+                    )
+                queue_path.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                return {"ok": True, "enqueued": len(packs), "running": False}
+
+            with patch.object(ingest_mod, "audit_packs", side_effect=fake_audit):
+                with patch("desktop.backend.runner.stage_and_enqueue_only", side_effect=fake_enqueue):
+                    result = ingest_mod.audit_and_enqueue(
+                        root,
+                        [
+                            {"domain_key": "example", "pack": "good"},
+                            {"domain_key": "example", "pack": "bad"},
+                            {"domain_key": "example", "pack": "warn-pack"},
+                        ],
+                    )
+            self.assertEqual(len(called), 1)
+            self.assertEqual([row["pack"] for row in called[0]], ["good", "warn-pack"])
+            queue = json.loads((root / "queue" / "queue.json").read_text(encoding="utf-8"))
+            ids = [task["id"] for task in queue["tasks"]]
+            self.assertIn("t-good", ids)
+            self.assertIn("t-warn-pack", ids)
+            self.assertNotIn("t-bad", ids)
+            self.assertNotEqual(read_state(root).get("status"), "running")
+            self.assertFalse(result["enqueue"].get("running"))
+
+    def test_stage_and_enqueue_only_does_not_mark_running(self) -> None:
+        from desktop.backend.run_control import read_state
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "ws"
+            root.mkdir()
+            ensure_workspace(root)
+
+            def fake_stage(workspace, **kwargs):
+                queue_path = workspace / "queue" / "queue.json"
+                queue = json.loads(queue_path.read_text(encoding="utf-8"))
+                queue.setdefault("tasks", []).append({"id": "t-new", "status": "queued", "slug": "demo"})
+                queue_path.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            with patch.object(desktop_runner, "_stage_and_enqueue", side_effect=fake_stage):
+                with patch.object(desktop_runner, "mark_running", side_effect=AssertionError("must not start run")):
+                    result = desktop_runner.stage_and_enqueue_only(
+                        root,
+                        packs=[{"domain_key": "example", "pack": "demo"}],
+                    )
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["running"])
+            self.assertEqual(result["enqueued"], 1)
+            self.assertNotEqual(read_state(root).get("status"), "running")
+
+    def test_scan_known_indexes_arxiv_and_gutenberg(self) -> None:
+        from desktop.backend.discover import scan_known
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            arxiv_dir = root / "materials" / "academic" / "2401.11111"
+            arxiv_dir.mkdir(parents=True)
+            (arxiv_dir / "CATALOG.json").write_text(
+                json.dumps(
+                    {
+                        "pack": "2401.11111",
+                        "domain_key": "academic",
+                        "arxiv_id": "2401.11111",
+                        "docs": [{"url": "https://arxiv.org/pdf/2401.11111.pdf", "arxiv_id": "2401.11111"}],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            pg_dir = root / "materials" / "literature" / "pg42424"
+            pg_dir.mkdir(parents=True)
+            (pg_dir / "CATALOG.json").write_text(
+                json.dumps(
+                    {
+                        "pack": "pg42424",
+                        "domain_key": "literature",
+                        "docs": [{"url": "https://www.gutenberg.org/cache/epub/42424/pg42424.txt", "slug": "pg42424"}],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            known = scan_known(root)
+            self.assertIn("2401.11111", known.arxiv)
+            self.assertTrue(known.has_pack("academic", "2401.11111"))
+            self.assertIn("42424", known.gutenberg)
+            self.assertTrue(known.has_pack("literature", "pg42424"))
+
+    def test_discover_specs_skips_known_and_reads_http(self) -> None:
+        from desktop.backend import discover as discover_mod
+
+        atom = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2401.11111v1</id>
+    <title>Already collected paper</title>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2406.55555v1</id>
+    <title>A new obscure methods paper</title>
+  </entry>
+</feed>
+"""
+        gutendex = {
+            "results": [
+                {
+                    "id": 11,
+                    "title": "Pride and Prejudice",
+                    "download_count": 12,
+                    "formats": {"text/plain; charset=utf-8": "https://www.gutenberg.org/files/11/11-0.txt"},
+                    "subjects": ["Fiction"],
+                },
+                {
+                    "id": 888001,
+                    "title": "Obscure Folklore Field Notes",
+                    "download_count": 18,
+                    "formats": {"text/plain; charset=utf-8": "https://www.gutenberg.org/cache/epub/888001/pg888001.txt"},
+                    "subjects": ["Folklore"],
+                },
+            ]
+        }
+        gnu = '<html><a href="/software/bash/manual/bash.html">GNU Bash</a></html>'
+
+        def fake_http(url: str, timeout: int = 20) -> bytes:
+            if "export.arxiv.org" in url:
+                return atom.encode("utf-8")
+            if "gutendex.com" in url:
+                return json.dumps(gutendex).encode("utf-8")
+            if "gnu.org/manual" in url:
+                return gnu.encode("utf-8")
+            raise AssertionError(url)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            arxiv_dir = root / "materials" / "academic" / "2401.11111"
+            arxiv_dir.mkdir(parents=True)
+            (arxiv_dir / "CATALOG.json").write_text(
+                json.dumps({"pack": "2401.11111", "domain_key": "academic", "arxiv_id": "2401.11111", "docs": []})
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(discover_mod, "http_get", side_effect=fake_http):
+                with patch.object(discover_mod, "FALLBACK_GUTENBERG", ()):
+                    with patch.object(discover_mod, "FALLBACK_GNU", ()):
+                        with patch.object(discover_mod, "FALLBACK_RFC", ()):
+                            specs = discover_mod.discover_specs(root, want=10)
+        packs = {(row["domain_key"], row["pack"]) for row in specs}
+        self.assertIn(("academic", "2406.55555"), packs)
+        self.assertNotIn(("academic", "2401.11111"), packs)
+        self.assertIn("pg888001", {row["pack"] for row in specs})
+        self.assertNotIn("pg11", {row["pack"] for row in specs})
+        self.assertTrue(any(row["pack"] == "gnu-bash" for row in specs))
+
+    def test_run_ingest_without_only_discovers_after_existing_seeds(self) -> None:
+        from desktop.backend import ingest as ingest_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_ready_pack(root, "academic", "seed-pack")
+            seed = {
+                "collector": "twelve",
+                "domain_key": "academic",
+                "pack": "seed-pack",
+                "exists": True,
+                "path": "materials/academic/seed-pack",
+            }
+            spec = {
+                "source": "arxiv",
+                "domain_key": "academic",
+                "domain": "学术",
+                "pack": "2406.55555",
+                "theme": "A new obscure methods paper",
+                "docs": [{"doc_id": "DOC1", "slug": "2406.55555", "url": "https://arxiv.org/pdf/2406.55555.pdf", "kind": "pdf"}],
+            }
+            called: list[str] = []
+
+            def fake_collect(_workspace: Path, spec_in: dict) -> dict:
+                called.append(str(spec_in["pack"]))
+                pack_dir = root / "materials" / spec_in["domain_key"] / spec_in["pack"]
+                pack_dir.mkdir(parents=True, exist_ok=True)
+                catalog = {
+                    "pack": spec_in["pack"],
+                    "domain": spec_in.get("domain") or spec_in["domain_key"],
+                    "domain_key": spec_in["domain_key"],
+                    "status": "READY",
+                    "enough_for_16k": True,
+                    "docs": [{"doc_id": "DOC1", "file_md": f"materials/{spec_in['domain_key']}/{spec_in['pack']}/md/doc.md"}],
+                    "total_approx_tokens": 20000,
+                }
+                (pack_dir / "md").mkdir(exist_ok=True)
+                (pack_dir / "md" / "doc.md").write_text("# new\n", encoding="utf-8")
+                (pack_dir / "CATALOG.json").write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                return catalog
+
+            with patch.object(ingest_mod, "list_ingest_jobs", return_value={"jobs": [seed], "count": 1}):
+                with patch("desktop.backend.discover.discover_specs", return_value=[spec]) as discover:
+                    with patch.object(ingest_mod, "_collect_discovered", side_effect=fake_collect):
+                        result = ingest_mod.run_ingest(root, ingest_run_id="run-1")
+            self.assertTrue(discover.called)
+            self.assertEqual(called, ["2406.55555"])
+            self.assertEqual(result["skipped"], 1)
+            self.assertEqual(result["count"], 1)
+            self.assertEqual(result["discovered"], 1)
+            self.assertTrue(result["sites_queried"])
+            self.assertEqual(result["ingest_run_id"], "run-1")
+            self.assertEqual(result["collected"][0]["pack"], "2406.55555")
+
+    def test_run_ingest_only_does_not_query_sites(self) -> None:
+        from desktop.backend import ingest as ingest_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sample = ingest_mod.list_ingest_jobs(root)["jobs"][0]
+            self._write_ready_pack(root, sample["domain_key"], sample["pack"])
+            with patch("desktop.backend.discover.discover_specs", return_value=[{"pack": "should-not-run"}]) as discover:
+                result = ingest_mod.run_ingest(
+                    root,
+                    only=[{"domain_key": sample["domain_key"], "pack": sample["pack"]}],
+                )
+            discover.assert_not_called()
+            self.assertEqual(result["skipped"], 1)
+            self.assertEqual(result["count"], 0)
+            self.assertFalse(result["sites_queried"])
+
+    def test_discover_hardcoded_needs_no_live_api(self) -> None:
+        from desktop.backend import discover as discover_mod
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(discover_mod, "search_arxiv", side_effect=AssertionError("arxiv")):
+                with patch.object(discover_mod, "search_gutenberg", side_effect=AssertionError("gutendex")):
+                    with patch.object(discover_mod, "search_gnu", side_effect=AssertionError("gnu-index")):
+                        specs = discover_mod.discover_specs(root, want=6)
+            packs = [row["pack"] for row in specs]
+            self.assertGreaterEqual(len(specs), 6)
+            self.assertIn("pg8492", packs)
+            self.assertTrue(any(row["source"] == "gutenberg" for row in specs))
+            pg_dir = root / "materials" / "literature" / "pg8492"
+            pg_dir.mkdir(parents=True)
+            (pg_dir / "CATALOG.json").write_text(
+                json.dumps(
+                    {
+                        "pack": "pg8492",
+                        "domain_key": "literature",
+                        "docs": [{"url": "https://www.gutenberg.org/cache/epub/8492/pg8492.txt", "slug": "pg8492"}],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.object(discover_mod, "search_arxiv", return_value=[]):
+                with patch.object(discover_mod, "search_gutenberg", return_value=[]):
+                    with patch.object(discover_mod, "search_gnu", return_value=[]):
+                        again = discover_mod.discover_specs(root, want=6)
+            self.assertNotIn("pg8492", [row["pack"] for row in again])
 
 
 if __name__ == "__main__":

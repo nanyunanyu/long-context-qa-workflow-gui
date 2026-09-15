@@ -3,19 +3,20 @@
     <div class="bar">
       <h2>材料目录</h2>
       <el-button @click="load">刷新</el-button>
-      <el-dropdown trigger="click" :disabled="auditBusy" @command="onAuditActionSelect">
-        <el-button :disabled="auditBusy" title="审核当前列表或已勾选材料包">
-          {{ auditBusy ? "审核中…" : "操作" }}
+      <el-dropdown trigger="click" :disabled="jobBusy" @command="onActionSelect">
+        <el-button :disabled="jobBusy" title="搜寻材料、审核或入队">
+          {{ jobBusy ? jobBusyLabel : "操作" }}
           <el-icon class="el-icon--right"><ArrowDown /></el-icon>
         </el-button>
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item
-              v-for="opt in auditActionOptions"
+              v-for="opt in actionOptions"
               :key="opt.key"
               :command="opt.key"
               :disabled="opt.disabled"
               :title="opt.title"
+              :divided="opt.danger"
             >
               {{ opt.label }}
             </el-dropdown-item>
@@ -25,10 +26,13 @@
       <el-button :disabled="!auditBusy" @click="stopAudit">
         {{ auditStopping ? "停止中…" : "停止审核" }}
       </el-button>
+      <el-button :disabled="!ingestBusy" @click="stopIngest">
+        {{ ingestStopping ? "停止中…" : "停止搜寻" }}
+      </el-button>
       <el-alert
-        v-if="auditMessage"
-        :type="auditError ? 'error' : 'info'"
-        :title="auditMessage"
+        v-if="statusMessage"
+        :type="statusError ? 'error' : 'info'"
+        :title="statusMessage"
         show-icon
         :closable="false"
         class="audit-alert"
@@ -87,8 +91,8 @@
       <span class="hint">已显示 {{ visiblePackCount }} / {{ totalPackCount }} 包</span>
     </div>
     <p class="note">
-      请按领域 → 主题包放入 pdf/html 与对应 md，并维护 CATALOG.json。结构检查在本页完成；「审核」会调用大模型按选材标准写回
-      CATALOG.llm_audit，不拦入队。
+      「搜寻材料」会先跳过已有种子包，再从 Gutenberg 全文、GNU 手册、IETF RFC 等写死的公开源补货（arXiv API 不通时会跳过）。落盘后请先勾选或删除不需要的包，再点「审核并入队」。审核
+      pass/warn 会写入队列但不启动出题，请到看板点「继续」。结构检查在本页完成；单独「审核」只写回 CATALOG.llm_audit，不入队。
     </p>
     <pre v-if="data.readme" class="readme">{{ data.readme }}</pre>
 
@@ -101,14 +105,14 @@
 
     <el-card v-for="domain in visibleDomains" :key="domain.domain_key" class="domain" shadow="never">
       <h3>{{ domain.domain }} <small>{{ domain.domain_key }}</small></h3>
-      <el-table :data="domain.packs" size="small">
+      <el-table :data="domain.packs" size="small" :row-class-name="packRowClass">
         <el-table-column min-width="280">
           <template #header>
             <div class="pack-head">
               <el-checkbox
                 :model-value="domainAllSelected(domain)"
                 :indeterminate="domainSomeSelected(domain)"
-                :disabled="auditBusy || !domain.packs?.length"
+                :disabled="jobBusy || !domain.packs?.length"
                 @change="toggleDomainPacks(domain)"
               />
               包
@@ -118,7 +122,7 @@
             <div class="pack-cell">
               <el-checkbox
                 :model-value="selectedPackSet.has(packPath(row))"
-                :disabled="auditBusy"
+                :disabled="jobBusy"
                 @change="togglePack(row)"
               />
               <div class="pack-body">
@@ -195,7 +199,7 @@
               size="small"
               :type="isPackAuditing(row, domain) ? 'primary' : 'default'"
               :loading="isPackAuditing(row, domain)"
-              :disabled="auditBusy && !isPackAuditing(row, domain)"
+              :disabled="jobBusy && !isPackAuditing(row, domain)"
               @click.stop="auditOne(row, domain.domain_key)"
             >
               {{ isPackAuditing(row, domain) ? "审核中" : "审核" }}
@@ -235,7 +239,7 @@
 import { computed, onDeactivated, onMounted, onUnmounted, ref, watch } from "vue";
 import { ArrowDown, Search } from "@element-plus/icons-vue";
 import { apiGet, apiPost, apiPut, domainTagTone, docKindPresentation, docKindSearchText, matchesMaterialQuery } from "../api";
-import { chipTagType, type MenuAction } from "../ui";
+import { chipTagType, confirmAction, type MenuAction } from "../ui";
 import FilterSummaryCard, { type SummaryGroup } from "../components/FilterSummaryCard.vue";
 
 const props = defineProps<{ initialPrefs?: any }>();
@@ -280,12 +284,17 @@ const data = ref<any>({ domains: [] });
 const filterOpen = ref(false);
 const packSearch = ref("");
 const auditBusy = ref(false);
+const ingestBusy = ref(false);
 const auditStopping = ref(false);
+const ingestStopping = ref(false);
 const auditingPackKeys = ref<string[]>([]);
+const ingestingPackKeys = ref<string[]>([]);
+const newPackKeys = ref<string[]>([]);
 let auditEpoch = 0;
+let ingestEpoch = 0;
 const selectedPackPaths = ref<string[]>([]);
-const auditMessage = ref("");
-const auditError = ref(false);
+const statusMessage = ref("");
+const statusError = ref(false);
 const auditDialog = ref({
   open: false,
   pack: "",
@@ -449,6 +458,13 @@ const materialSummaryGroups = computed<SummaryGroup[]>(() => {
   ];
 });
 
+const jobBusy = computed(() => auditBusy.value || ingestBusy.value);
+const jobBusyLabel = computed(() => {
+  if (ingestBusy.value) return ingestStopping.value ? "停止搜寻中…" : "搜寻中…";
+  if (auditBusy.value) return auditStopping.value ? "停止审核中…" : "审核中…";
+  return "操作";
+});
+
 function packPath(pack: any): string {
   return String(pack?.path || `${pack?.domain_key || ""}::${pack?.pack || ""}`);
 }
@@ -525,22 +541,48 @@ function withCount(label: string, count: number) {
 
 const auditActionOptions = computed<MenuAction[]>(() => [
   {
+    label: "搜寻材料",
+    key: "ingest",
+    disabled: jobBusy.value,
+    title: "跳过已有种子后，从 Gutenberg / GNU 手册 / RFC 等可达公开源补货",
+  },
+  {
     label: withCount("审核当前列表", visiblePackCount.value),
     key: "visible",
-    disabled: auditBusy.value || !visiblePackCount.value,
+    disabled: jobBusy.value || !visiblePackCount.value,
     title: visiblePackCount.value ? "审核当前筛选可见的全部材料包" : "当前列表没有可审核的材料包",
   },
   {
     label: withCount("审核勾选项", selectedPackPaths.value.length),
     key: "selected",
-    disabled: auditBusy.value || !selectedPackPaths.value.length,
+    disabled: jobBusy.value || !selectedPackPaths.value.length,
     title: selectedPackPaths.value.length ? "审核已勾选的材料包" : "请先勾选材料包",
+  },
+  {
+    label: withCount("审核并入队", selectedPackPaths.value.length),
+    key: "audit-enqueue",
+    disabled: jobBusy.value || !selectedPackPaths.value.length,
+    title: selectedPackPaths.value.length
+      ? "审核勾选包，将 pass/warn 写入队列（不启动出题）"
+      : "请先勾选材料包",
+  },
+  {
+    label: withCount("移除选中包", selectedPackPaths.value.length),
+    key: "delete",
+    disabled: jobBusy.value || !selectedPackPaths.value.length,
+    danger: true,
+    title: selectedPackPaths.value.length ? "从工作区删除已勾选材料包目录" : "请先勾选材料包",
   },
 ]);
 
-function onAuditActionSelect(key: string | number) {
+const actionOptions = auditActionOptions;
+
+function onActionSelect(key: string | number) {
+  if (key === "ingest") return startIngest();
   if (key === "visible") return auditVisible();
   if (key === "selected") return auditSelected();
+  if (key === "audit-enqueue") return auditEnqueueSelected();
+  if (key === "delete") return deleteSelected();
 }
 
 function selectAllDomains() {
@@ -596,9 +638,12 @@ watch([selectedDomains, selectedStatuses, selectedAudits], () => persistFilters(
 onDeactivated(() => persistFilters(true));
 onUnmounted(() => persistFilters(true));
 
-async function load() {
+async function load(opts: { clearHighlight?: boolean } = {}) {
   data.value = await apiGet("/api/materials");
   pruneSelection();
+  if (opts.clearHighlight !== false) {
+    newPackKeys.value = [];
+  }
 }
 
 function auditLabel(status: string) {
@@ -735,17 +780,59 @@ function applyAuditProgress(state: any) {
   }
 }
 
+function packRowClass({ row }: { row: any }) {
+  const domainKey = String(row?.domain_key || "");
+  const name = String(row?.pack || "");
+  if (domainKey && name && newPackKeys.value.includes(packAuditKey(domainKey, name))) {
+    return "pack-row-new";
+  }
+  return "";
+}
+
+function selectedPackSelectors(): Array<{ domain_key: string; pack: string }> {
+  const want = new Set(selectedPackPaths.value);
+  const packs: Array<{ domain_key: string; pack: string }> = [];
+  for (const domain of data.value.domains || []) {
+    for (const pack of domain.packs || []) {
+      if (!want.has(packPath(pack))) continue;
+      packs.push({
+        domain_key: String(pack.domain_key || domain.domain_key || ""),
+        pack: String(pack.pack || ""),
+      });
+    }
+  }
+  return packs;
+}
+
+function applyIngestProgress(state: any) {
+  if (!state?.ingest_busy) {
+    ingestingPackKeys.value = [];
+    return;
+  }
+  const current = state.ingest_current;
+  const theme = String(current?.theme || "").trim();
+  if (theme) statusMessage.value = theme;
+  const pending = Array.isArray(state.ingest_pending) ? state.ingest_pending : [];
+  const keys = pending.map((item: any) =>
+    packAuditKey(String(item?.domain_key || ""), String(item?.pack || ""))
+  );
+  if (current?.domain_key && current?.pack) {
+    keys.unshift(packAuditKey(String(current.domain_key || ""), String(current.pack || "")));
+  }
+  ingestingPackKeys.value = keys.filter(Boolean);
+}
+
 async function reloadMaterialsQuietly() {
   try {
-    await load();
+    await load({ clearHighlight: false });
   } catch {
-    /* keep waiting for the in-flight audit */
+    /* keep waiting for the in-flight job */
   }
 }
 
 async function waitAuditDone() {
   await new Promise((resolve) => window.setTimeout(resolve, 400));
-  for (let i = 0; i < 180; i++) {
+  for (let i = 0; i < 20000; i++) {
     const state = await apiGet("/api/run/state");
     if (state?.audit_stopping) {
       auditStopping.value = true;
@@ -764,53 +851,83 @@ async function waitAuditDone() {
   return null;
 }
 
+async function waitIngestDone(runId: string) {
+  await new Promise((resolve) => window.setTimeout(resolve, 400));
+  for (let i = 0; i < 20000; i++) {
+    const state = await apiGet("/api/run/state");
+    if (state?.ingest_stopping) {
+      ingestStopping.value = true;
+    }
+    applyIngestProgress(state);
+    const last = state?.last_ingest;
+    const matched = Boolean(runId) && String(last?.ingest_run_id || "") === String(runId);
+    if (matched && !state?.ingest_busy) {
+      ingestingPackKeys.value = [];
+      await reloadMaterialsQuietly();
+      return last;
+    }
+    if (i % 3 === 0) await reloadMaterialsQuietly();
+    await new Promise((resolve) => window.setTimeout(resolve, 800));
+  }
+  ingestingPackKeys.value = [];
+  await reloadMaterialsQuietly();
+  return null;
+}
+
+function summarizeAudit(result: any, verb: string) {
+  if (result?.error && !Array.isArray(result?.results)) {
+    return { error: true, message: `${verb}失败：${result.error}` };
+  }
+  const rows = result?.results || [];
+  const ok = Number(result?.count || 0);
+  const skipped = Number(result?.skipped || rows.filter((r: any) => r.stopped).length);
+  const fail = rows.filter((r: any) => !r.ok && !r.stopped).length;
+  if (result?.stopped) {
+    return {
+      error: Boolean(fail),
+      message: fail
+        ? `${verb}已停止：成功 ${ok}，失败 ${fail}，跳过 ${skipped}`
+        : `${verb}已停止：成功 ${ok}，跳过 ${skipped}`,
+    };
+  }
+  if (!result) {
+    return { error: true, message: `${verb}超时，请刷新后重试。` };
+  }
+  return {
+    error: Boolean(fail),
+    message: fail ? `${verb}结束：成功 ${ok}，失败 ${fail}` : `${verb}结束：成功 ${ok}`,
+  };
+}
+
 async function startAudit(packs: Array<{ domain_key: string; pack: string }>) {
   if (!packs.length) return;
-  if (auditBusy.value) {
+  if (jobBusy.value) {
     const already = packs.every((p) =>
       auditingPackSet.value.has(packAuditKey(p.domain_key, p.pack))
     );
     if (!already) {
-      auditError.value = true;
-      auditMessage.value = "已有材料审核在运行，请等待结束或点「停止审核」。";
+      statusError.value = true;
+      statusMessage.value = "已有材料任务在运行，请等待结束或点停止。";
     }
     return;
   }
   const epoch = ++auditEpoch;
   auditBusy.value = true;
   auditStopping.value = false;
-  auditError.value = false;
+  statusError.value = false;
   auditingPackKeys.value = packs.map((p) => packAuditKey(p.domain_key, p.pack));
-  auditMessage.value = `正在审核 ${packs.length} 个材料包…`;
+  statusMessage.value = `正在审核 ${packs.length} 个材料包…`;
   try {
     await apiPost("/api/materials/audit", { packs });
     const result = await waitAuditDone();
     if (epoch !== auditEpoch) return;
-    if (result?.error && !Array.isArray(result?.results)) {
-      auditError.value = true;
-      auditMessage.value = `审核失败：${result.error}`;
-      return;
-    }
-    const rows = result?.results || [];
-    const ok = Number(result?.count || 0);
-    const skipped = Number(result?.skipped || rows.filter((r: any) => r.stopped).length);
-    const fail = rows.filter((r: any) => !r.ok && !r.stopped).length;
-    if (result?.stopped) {
-      auditMessage.value = fail
-        ? `审核已停止：成功 ${ok}，失败 ${fail}，跳过 ${skipped}`
-        : `审核已停止：成功 ${ok}，跳过 ${skipped}`;
-      auditError.value = Boolean(fail);
-    } else if (!result) {
-      auditError.value = true;
-      auditMessage.value = "审核超时，请刷新后重试。";
-    } else {
-      auditMessage.value = fail ? `审核结束：成功 ${ok}，失败 ${fail}` : `审核结束：成功 ${ok}`;
-      auditError.value = Boolean(fail);
-    }
+    const summary = summarizeAudit(result, "审核");
+    statusError.value = summary.error;
+    statusMessage.value = summary.message;
   } catch (err: any) {
     if (epoch !== auditEpoch) return;
-    auditError.value = true;
-    auditMessage.value = err?.message || String(err);
+    statusError.value = true;
+    statusMessage.value = err?.message || String(err);
   } finally {
     if (epoch === auditEpoch) {
       auditBusy.value = false;
@@ -820,16 +937,166 @@ async function startAudit(packs: Array<{ domain_key: string; pack: string }>) {
   }
 }
 
+async function startIngest() {
+  if (jobBusy.value) {
+    statusError.value = true;
+    statusMessage.value = "已有材料任务在运行，请等待结束或点停止。";
+    return;
+  }
+  const epoch = ++ingestEpoch;
+  ingestBusy.value = true;
+  ingestStopping.value = false;
+  statusError.value = false;
+  statusMessage.value = "正在搜寻 Gutenberg / GNU 手册 / RFC…";
+  try {
+    const started = await apiPost("/api/materials/ingest", {});
+    const result = await waitIngestDone(String(started?.ingest_run_id || ""));
+    if (epoch !== ingestEpoch) return;
+    if (result?.error && !Array.isArray(result?.results)) {
+      statusError.value = true;
+      statusMessage.value = `搜寻失败：${result.error}`;
+      return;
+    }
+    const collected = Array.isArray(result?.collected) ? result.collected : [];
+    newPackKeys.value = collected.map((item: any) =>
+      packAuditKey(String(item?.domain_key || ""), String(item?.pack || ""))
+    );
+    await load({ clearHighlight: false });
+    const skipped = Number(result?.skipped || 0);
+    const failed = Number(result?.failed || 0);
+    const discovered = Number(result?.discovered || 0);
+    const discoverFailed = Number(result?.discover_failed || 0);
+    const ok = Number(result?.count || collected.length);
+    const discoveredBit = discovered ? `（站点搜寻 ${discovered}）` : "";
+    if (result?.stopped) {
+      statusMessage.value = `搜寻已停止：新入库 ${ok}${discoveredBit}，跳过已有种子 ${skipped}` + (failed ? `，失败 ${failed}` : "");
+      statusError.value = Boolean(failed);
+    } else if (!result) {
+      statusError.value = true;
+      statusMessage.value = "搜寻超时，请刷新后重试。";
+    } else if (!ok) {
+      statusError.value = Boolean(failed || discoverFailed);
+      const why = String(result?.last_error || "").trim();
+      statusMessage.value = why
+        ? `搜寻结束：没有新的达标材料，跳过已有种子 ${skipped}。最近一次失败：${why}`
+        : discoverFailed
+          ? `搜寻结束：预设站点没有新的达标材料（候选未通过 ${discoverFailed}），跳过已有种子 ${skipped}。可稍后重试或勾选已有包「审核并入队」。`
+          : `搜寻结束：预设站点没有新的达标材料，跳过已有种子 ${skipped}。可稍后重试或勾选已有包「审核并入队」。`;
+    } else {
+      statusError.value = Boolean(failed);
+      statusMessage.value = failed
+        ? `搜寻结束：新入库 ${ok}${discoveredBit}，跳过已有种子 ${skipped}，失败 ${failed}。请勾选或删除后再「审核并入队」。`
+        : `搜寻结束：新入库 ${ok}${discoveredBit}，跳过已有种子 ${skipped}。请勾选或删除后再「审核并入队」。`;
+    }
+  } catch (err: any) {
+    if (epoch !== ingestEpoch) return;
+    statusError.value = true;
+    statusMessage.value = err?.message || String(err);
+  } finally {
+    if (epoch === ingestEpoch) {
+      ingestBusy.value = false;
+      ingestStopping.value = false;
+      ingestingPackKeys.value = [];
+    }
+  }
+}
+
+async function auditEnqueueSelected() {
+  const packs = selectedPackSelectors();
+  if (!packs.length) return;
+  if (jobBusy.value) {
+    statusError.value = true;
+    statusMessage.value = "已有材料任务在运行，请等待结束或点停止。";
+    return;
+  }
+  const epoch = ++auditEpoch;
+  auditBusy.value = true;
+  auditStopping.value = false;
+  statusError.value = false;
+  auditingPackKeys.value = packs.map((p) => packAuditKey(p.domain_key, p.pack));
+  statusMessage.value = `正在审核并入队 ${packs.length} 个材料包…`;
+  try {
+    await apiPost("/api/materials/audit-enqueue", { packs });
+    const result = await waitAuditDone();
+    if (epoch !== auditEpoch) return;
+    if (result?.error && !Array.isArray(result?.results)) {
+      statusError.value = true;
+      statusMessage.value = `审核并入队失败：${result.error}`;
+      return;
+    }
+    const summary = summarizeAudit(result, "审核");
+    const enqueued = Number(result?.enqueue?.enqueued || 0);
+    const rejected = Array.isArray(result?.rejected) ? result.rejected.length : 0;
+    if (result?.stopped || result?.enqueue?.stopped) {
+      statusError.value = summary.error;
+      statusMessage.value = `${summary.message}；已入队 ${enqueued}。`;
+    } else if (!result) {
+      statusError.value = true;
+      statusMessage.value = "审核并入队超时，请刷新后重试。";
+    } else {
+      statusError.value = summary.error;
+      statusMessage.value = `审核结束：pass/warn 已入队 ${enqueued} 条` +
+        (rejected ? `，未入队 ${rejected}` : "") +
+        "。请到看板点「继续」开始出题（不要再 stage 无关包）。";
+    }
+  } catch (err: any) {
+    if (epoch !== auditEpoch) return;
+    statusError.value = true;
+    statusMessage.value = err?.message || String(err);
+  } finally {
+    if (epoch === auditEpoch) {
+      auditBusy.value = false;
+      auditStopping.value = false;
+      auditingPackKeys.value = [];
+    }
+  }
+}
+
+async function deleteSelected() {
+  const packs = selectedPackSelectors();
+  if (!packs.length) return;
+  const ok = await confirmAction(
+    `将从工作区删除 ${packs.length} 个材料包目录，且无法从本页恢复。确认移除？`,
+    "移除材料包"
+  );
+  if (!ok) return;
+  try {
+    const result = await apiPost("/api/materials/packs/delete", { packs });
+    await load();
+    const failed = Number(result?.failed || 0);
+    statusError.value = Boolean(failed);
+    statusMessage.value = failed
+      ? `已移除 ${result?.count || 0} 个包，失败 ${failed}`
+      : `已移除 ${result?.count || packs.length} 个材料包`;
+  } catch (err: any) {
+    statusError.value = true;
+    statusMessage.value = err?.message || String(err);
+  }
+}
+
 async function stopAudit() {
   if (!auditBusy.value || auditStopping.value) return;
   auditStopping.value = true;
   try {
     await apiPost("/api/materials/audit/stop");
-    auditMessage.value = "正在停止审核…";
+    statusMessage.value = "正在停止审核…";
   } catch (err: any) {
     auditStopping.value = false;
-    auditError.value = true;
-    auditMessage.value = err?.message || String(err);
+    statusError.value = true;
+    statusMessage.value = err?.message || String(err);
+  }
+}
+
+async function stopIngest() {
+  if (!ingestBusy.value || ingestStopping.value) return;
+  ingestStopping.value = true;
+  try {
+    await apiPost("/api/materials/ingest/stop");
+    statusMessage.value = "正在停止搜寻…";
+  } catch (err: any) {
+    ingestStopping.value = false;
+    statusError.value = true;
+    statusMessage.value = err?.message || String(err);
   }
 }
 
@@ -851,18 +1118,7 @@ function auditVisible() {
 }
 
 function auditSelected() {
-  const want = new Set(selectedPackPaths.value);
-  const packs: Array<{ domain_key: string; pack: string }> = [];
-  for (const domain of data.value.domains || []) {
-    for (const pack of domain.packs || []) {
-      if (!want.has(packPath(pack))) continue;
-      packs.push({
-        domain_key: String(pack.domain_key || domain.domain_key || ""),
-        pack: String(pack.pack || ""),
-      });
-    }
-  }
-  return startAudit(packs);
+  return startAudit(selectedPackSelectors());
 }
 
 onMounted(async () => {
@@ -1009,6 +1265,9 @@ small {
 }
 .review-verdict.tone-running {
   color: #1d4ed8;
+}
+:deep(.pack-row-new > td) {
+  background: #eff6ff;
 }
 .modal-reason {
   white-space: pre-wrap;
